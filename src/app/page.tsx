@@ -1,13 +1,27 @@
 'use client';
 
-import { FormEvent, useEffect, useState } from 'react';
+import {
+  FormEvent,
+  useEffect,
+  useState,
+} from 'react';
 
 type Message = {
   role: 'user' | 'assistant';
   content: string;
 };
 
-type Provider = 'auto' | 'openai' | 'anthropic' | 'gemini';
+type Provider =
+  | 'auto'
+  | 'openai'
+  | 'anthropic'
+  | 'gemini';
+
+type ThinkingMode =
+  | 'fast'
+  | 'thinking'
+  | 'coding'
+  | 'research';
 
 type User = {
   id: string;
@@ -18,6 +32,38 @@ type Conversation = {
   id: string;
   title: string;
 };
+
+const MODES: {
+  id: ThinkingMode;
+  label: string;
+  icon: string;
+  description: string;
+}[] = [
+  {
+    id: 'fast',
+    label: 'Fast',
+    icon: '⚡',
+    description: 'Quick answers and everyday questions.',
+  },
+  {
+    id: 'thinking',
+    label: 'Deep Thinking',
+    icon: '🧠',
+    description: 'Deeper reasoning for difficult problems.',
+  },
+  {
+    id: 'coding',
+    label: 'Coding',
+    icon: '⌘',
+    description: 'Programming, debugging and code creation.',
+  },
+  {
+    id: 'research',
+    label: 'Research',
+    icon: '⌕',
+    description: 'Detailed analysis and research assistance.',
+  },
+];
 
 export default function Home() {
   const [user, setUser] = useState<User | null>(null);
@@ -35,8 +81,12 @@ export default function Home() {
 
   const [input, setInput] = useState('');
   const [provider, setProvider] = useState<Provider>('auto');
+  const [thinkingMode, setThinkingMode] =
+    useState<ThinkingMode>('thinking');
+
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  const [sidebarOpen, setSidebarOpen] = useState(false);
 
   async function loadConversations() {
     const response = await fetch('/api/conversations');
@@ -46,6 +96,7 @@ export default function Home() {
     }
 
     const data = await response.json();
+
     setConversations(data.conversations || []);
   }
 
@@ -75,7 +126,9 @@ export default function Home() {
     checkSession();
   }, []);
 
-  async function authenticate(event: FormEvent<HTMLFormElement>) {
+  async function authenticate(
+    event: FormEvent<HTMLFormElement>
+  ) {
     event.preventDefault();
 
     if (authBusy) return;
@@ -85,7 +138,9 @@ export default function Home() {
 
     try {
       const response = await fetch(
-        register ? '/api/auth/register' : '/api/auth/login',
+        register
+          ? '/api/auth/register'
+          : '/api/auth/login',
         {
           method: 'POST',
           headers: {
@@ -109,18 +164,19 @@ export default function Home() {
         data = JSON.parse(text);
       } catch {
         throw new Error(
-          'The server returned an invalid response. Check Render logs.'
+          'Invalid server response. Check Render logs.'
         );
       }
 
       if (!response.ok) {
         throw new Error(
-          data.error || `Authentication failed (${response.status}).`
+          data.error ||
+          `Authentication failed (${response.status}).`
         );
       }
 
       if (!data.user) {
-        throw new Error('Authentication succeeded but no user was returned.');
+        throw new Error('No user returned from server.');
       }
 
       setUser(data.user);
@@ -128,13 +184,12 @@ export default function Home() {
       setAuthError('');
 
       await loadConversations();
-    } catch (err) {
-      console.error('Authentication error:', err);
 
+    } catch (err) {
       setAuthError(
         err instanceof Error
           ? err.message
-          : 'Something went wrong. Please try again.'
+          : 'Something went wrong.'
       );
     } finally {
       setAuthBusy(false);
@@ -145,39 +200,53 @@ export default function Home() {
     setError('');
 
     try {
-      const response = await fetch(`/api/conversations/${id}`);
+      const response = await fetch(
+        `/api/conversations/${id}`
+      );
+
       const data = await response.json();
 
       if (!response.ok) {
-        throw new Error(data.error || 'Could not open conversation.');
+        throw new Error(
+          data.error || 'Could not open conversation.'
+        );
       }
 
       setConversationId(id);
 
       setMessages(
-        data.conversation.messages.map((message: Message) => ({
-          role: message.role,
-          content: message.content,
-        }))
+        data.conversation.messages.map(
+          (message: Message) => ({
+            role: message.role,
+            content: message.content,
+          })
+        )
       );
+
+      setSidebarOpen(false);
+
     } catch (err) {
       setError(
-        err instanceof Error ? err.message : 'Could not open conversation.'
+        err instanceof Error
+          ? err.message
+          : 'Could not open conversation.'
       );
     }
   }
 
-  async function sendMessage(event: FormEvent<HTMLFormElement>) {
+  async function sendMessage(
+    event: FormEvent<HTMLFormElement>
+  ) {
     event.preventDefault();
 
     const text = input.trim();
 
     if (!text || busy) return;
 
-    const next = [
+    const next: Message[] = [
       ...messages,
       {
-        role: 'user' as const,
+        role: 'user',
         content: text,
       },
     ];
@@ -197,13 +266,16 @@ export default function Home() {
           messages: next,
           provider,
           conversationId,
+          thinkingMode,
         }),
       });
 
       const data = await response.json();
 
       if (!response.ok) {
-        throw new Error(data.error || 'The request failed.');
+        throw new Error(
+          data.error || 'The request failed.'
+        );
       }
 
       setConversationId(data.conversationId);
@@ -217,9 +289,12 @@ export default function Home() {
       ]);
 
       await loadConversations();
+
     } catch (err) {
       setError(
-        err instanceof Error ? err.message : 'Something went wrong.'
+        err instanceof Error
+          ? err.message
+          : 'Something went wrong.'
       );
     } finally {
       setBusy(false);
@@ -243,13 +318,21 @@ export default function Home() {
   function newChat() {
     setMessages([]);
     setConversationId(undefined);
+    setInput('');
     setError('');
+    setSidebarOpen(false);
   }
+
+  const activeMode = MODES.find(
+    mode => mode.id === thinkingMode
+  )!;
 
   if (!authReady) {
     return (
       <main className="auth-shell">
-        <div className="auth-card">Loading BMS AI…</div>
+        <div className="auth-card">
+          Loading BMS AI…
+        </div>
       </main>
     );
   }
@@ -257,46 +340,63 @@ export default function Home() {
   if (!user) {
     return (
       <main className="auth-shell">
-        <form className="auth-card" onSubmit={authenticate}>
+        <form
+          className="auth-card"
+          onSubmit={authenticate}
+        >
           <div className="brand auth-brand">
             <span className="brand-mark">B</span>
+
             <span>
               BMS <b>AI</b>
             </span>
           </div>
 
-          <p className="eyebrow">YOUR AI WORKSPACE</p>
+          <p className="eyebrow">
+            YOUR AI WORKSPACE
+          </p>
 
           <h1>
-            {register ? 'Create your account' : 'Welcome back'}
+            {register
+              ? 'Create your account'
+              : 'Welcome back'}
           </h1>
 
           <p className="auth-sub">
-            Sign in to access your BMS AI workspace and saved conversations.
+            Sign in to access your BMS AI workspace
+            and saved conversations.
           </p>
 
           <label>
             Email address
+
             <input
               type="email"
               autoComplete="email"
               required
               value={email}
-              onChange={(event) => setEmail(event.target.value)}
+              onChange={event =>
+                setEmail(event.target.value)
+              }
             />
           </label>
 
           <label>
             Password
+
             <input
               type="password"
               autoComplete={
-                register ? 'new-password' : 'current-password'
+                register
+                  ? 'new-password'
+                  : 'current-password'
               }
               minLength={register ? 10 : 1}
               required
               value={password}
-              onChange={(event) => setPassword(event.target.value)}
+              onChange={event =>
+                setPassword(event.target.value)
+              }
             />
           </label>
 
@@ -337,7 +437,9 @@ export default function Home() {
                 setAuthError('');
               }}
             >
-              {register ? 'Sign in' : 'Create account'}
+              {register
+                ? 'Sign in'
+                : 'Create account'}
             </button>
           </p>
         </form>
@@ -347,46 +449,71 @@ export default function Home() {
 
   return (
     <main className="shell">
-      <aside className="sidebar">
+
+      {sidebarOpen && (
+        <button
+          className="sidebar-overlay"
+          aria-label="Close menu"
+          onClick={() => setSidebarOpen(false)}
+        />
+      )}
+
+      <aside
+        className={`sidebar ${
+          sidebarOpen ? 'sidebar-open' : ''
+        }`}
+      >
         <div className="brand">
           <span className="brand-mark">B</span>
+
           <span>
             BMS <b>AI</b>
           </span>
         </div>
 
-        <button className="new-chat" onClick={newChat}>
+        <button
+          className="new-chat"
+          onClick={newChat}
+        >
           ＋ New chat
         </button>
 
-        <div className="side-label">WORKSPACE</div>
+        <div className="side-label">
+          WORKSPACE
+        </div>
 
         <div className="side-item active">
           ✦ <span>AI Chat</span>
         </div>
 
-        <div className="side-item muted">
-          ▧ <span>Projects <small>Coming next</small></span>
+        <div className="side-item">
+          ▧ <span>Projects</span>
         </div>
 
-        <div className="side-item muted">
-          ⌘ <span>Coding Studio <small>Coming next</small></span>
+        <div className="side-item">
+          ⌘ <span>Coding Studio</span>
         </div>
 
-        <div className="side-item muted">
-          ⌕ <span>Research <small>Coming next</small></span>
+        <div className="side-item">
+          ⌕ <span>Research</span>
         </div>
 
-        <div className="side-label">RECENT CHATS</div>
+        <div className="side-label">
+          RECENT CHATS
+        </div>
 
         <div className="history-list">
-          {conversations.map((conversation) => (
+          {conversations.map(conversation => (
             <button
               key={conversation.id}
               className={`history-item ${
-                conversationId === conversation.id ? 'selected' : ''
+                conversationId === conversation.id
+                  ? 'selected'
+                  : ''
               }`}
-              onClick={() => openConversation(conversation.id)}
+              onClick={() =>
+                openConversation(conversation.id)
+              }
             >
               {conversation.title || 'New chat'}
             </button>
@@ -396,21 +523,39 @@ export default function Home() {
         <div className="side-bottom">
           <span>{user.email}</span>
 
-          <button onClick={logout}>Sign out</button>
+          <button onClick={logout}>
+            Sign out
+          </button>
 
           <br />
 
           One intelligence.
           <br />
+
           Unlimited possibilities.
         </div>
       </aside>
 
       <section className="main">
+
         <header className="topbar">
+          <button
+            className="mobile-menu"
+            onClick={() =>
+              setSidebarOpen(!sidebarOpen)
+            }
+          >
+            ☰
+          </button>
+
           <div>
-            <span className="status-dot" /> BMS AI{' '}
-            <span className="badge">EARLY ACCESS</span>
+            <span className="status-dot" />
+
+            BMS AI
+
+            <span className="badge">
+              EARLY ACCESS
+            </span>
           </div>
 
           <label className="model-picker">
@@ -418,40 +563,61 @@ export default function Home() {
 
             <select
               value={provider}
-              onChange={(event) =>
-                setProvider(event.target.value as Provider)
+              onChange={event =>
+                setProvider(
+                  event.target.value as Provider
+                )
               }
             >
-              <option value="auto">Auto select</option>
-              <option value="openai">OpenAI</option>
-              <option value="anthropic">Claude</option>
-              <option value="gemini">Gemini</option>
+              <option value="auto">
+                Auto select
+              </option>
+
+              <option value="gemini">
+                Gemini
+              </option>
+
+              <option value="openai">
+                OpenAI
+              </option>
+
+              <option value="anthropic">
+                Claude
+              </option>
             </select>
           </label>
         </header>
 
         <div className="conversation">
-          {messages.length === 0 ? (
-            <div className="welcome">
-              <div className="orb">✦</div>
 
-              <p className="eyebrow">YOUR AI WORKSPACE</p>
+          {messages.length === 0 ? (
+
+            <div className="welcome">
+
+              <div className="orb">
+                ✦
+              </div>
+
+              <p className="eyebrow">
+                YOUR AI WORKSPACE
+              </p>
 
               <h1>
                 What can we <span>create</span> today?
               </h1>
 
               <p className="subhead">
-                Ask a question, explore an idea, or get help bringing a
-                project to life.
+                Ask a question, explore an idea,
+                or bring a project to life.
               </p>
 
               <div className="suggestions">
+
                 {[
                   'Explain a difficult concept simply',
                   'Help me plan a website',
                   'Review and improve my code',
-                ].map((item) => (
+                ].map(item => (
                   <button
                     key={item}
                     onClick={() => setInput(item)}
@@ -460,73 +626,149 @@ export default function Home() {
                     <span>↗</span>
                   </button>
                 ))}
+
               </div>
+
             </div>
+
           ) : (
+
             <div className="messages">
+
               {messages.map((message, index) => (
+
                 <article
                   className={`message ${message.role}`}
                   key={index}
                 >
                   <div className="avatar">
-                    {message.role === 'user' ? 'Y' : '✦'}
+                    {message.role === 'user'
+                      ? 'Y'
+                      : '✦'}
                   </div>
 
                   <div>
                     <div className="role-label">
-                      {message.role === 'user' ? 'YOU' : 'BMS AI'}
+                      {message.role === 'user'
+                        ? 'YOU'
+                        : 'BMS AI'}
                     </div>
 
                     <p>{message.content}</p>
                   </div>
+
                 </article>
+
               ))}
 
               {busy && (
                 <div className="thinking">
-                  <span /> BMS AI is thinking…
+                  <span />
+                  BMS AI is working in{' '}
+                  {activeMode.label} mode…
                 </div>
               )}
+
             </div>
+
           )}
+
         </div>
 
         <div className="composer-wrap">
-          {error && <div className="error">{error}</div>}
 
-          <form className="composer" onSubmit={sendMessage}>
+          {error && (
+            <div className="error" role="alert">
+              {error}
+            </div>
+          )}
+
+          <div className="mode-bar">
+
+            <div className="mode-title">
+              AI MODE
+            </div>
+
+            <div className="mode-options">
+
+              {MODES.map(mode => (
+
+                <button
+                  key={mode.id}
+                  type="button"
+                  className={`mode-button ${
+                    thinkingMode === mode.id
+                      ? 'mode-active'
+                      : ''
+                  }`}
+                  onClick={() =>
+                    setThinkingMode(mode.id)
+                  }
+                  title={mode.description}
+                  disabled={busy}
+                >
+                  <span>{mode.icon}</span>
+                  {mode.label}
+                </button>
+
+              ))}
+
+            </div>
+
+            <div className="mode-description">
+              {activeMode.description}
+            </div>
+
+          </div>
+
+          <form
+            className="composer"
+            onSubmit={sendMessage}
+          >
+
             <textarea
               value={input}
-              onChange={(event) => setInput(event.target.value)}
+              onChange={event =>
+                setInput(event.target.value)
+              }
               placeholder="Message BMS AI…"
               rows={2}
-              onKeyDown={(event) => {
+              disabled={busy}
+              onKeyDown={event => {
                 if (
                   event.key === 'Enter' &&
                   !event.shiftKey
                 ) {
                   event.preventDefault();
+
                   event.currentTarget.form?.requestSubmit();
                 }
               }}
             />
 
             <div className="composer-footer">
+
               <span>
-                AI can make mistakes. Verify important information.
+                AI can make mistakes.
+                Verify important information.
               </span>
 
               <button
+                type="submit"
                 disabled={busy || !input.trim()}
                 aria-label="Send message"
               >
                 {busy ? '…' : '↑'}
               </button>
+
             </div>
+
           </form>
+
         </div>
+
       </section>
+
     </main>
   );
-            }
+        }
