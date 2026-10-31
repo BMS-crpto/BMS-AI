@@ -8,7 +8,7 @@ export const runtime = 'nodejs';
 export const maxDuration = 90;
 
 const MODES: ThinkingMode[] = ['fast', 'thinking', 'coding', 'research'];
-const PROVIDERS = ['auto', 'gemini', 'openai', 'anthropic'];
+const PROVIDERS = ['auto', 'gemini', 'groq', 'openrouter', 'openai', 'anthropic'];
 
 export async function POST(request: NextRequest) {
   try {
