@@ -22,7 +22,7 @@ const n = k => calls.filter(c => c.url.includes(k)).length;
 function fresh() {
   Object.keys(require.cache).filter(k => k.includes('/out/')).forEach(k => delete require.cache[k]);
   calls.length = 0;
-  for (const k of ['GEMINI_API_KEY','OPENAI_API_KEY','ANTHROPIC_API_KEY','TAVILY_API_KEY','BRAVE_SEARCH_API_KEY']) delete process.env[k];
+  for (const k of ['GEMINI_API_KEY','OPENAI_API_KEY','ANTHROPIC_API_KEY','TAVILY_API_KEY','BRAVE_SEARCH_API_KEY','GROQ_API_KEY','OPENROUTER_API_KEY']) delete process.env[k];
   return require(base + 'router.js');
 }
 const msgs = [{ role: 'user', content: 'hi' }];
@@ -122,6 +122,33 @@ t('all four modes produce a request', async () => {
     const a = await r.routeChat({ messages: msgs, mode, requested: 'auto' }); assert.equal(a.result.text, 'x');
     assert.match(calls.at(-1).body.systemInstruction.parts[0].text, mode==='thinking'?/DEEP THINKING/:new RegExp(mode==='research'?'RESEARCH':mode.toUpperCase()));
   }
+});
+
+t('Gemini quota -> Groq answers (OpenAI format, correct URL and key)', async () => {
+  const r = fresh(); process.env.GEMINI_API_KEY='g'; process.env.GROQ_API_KEY='gq';
+  script = { 'googleapis': [gem429()], 'api.groq.com': [oaiOk('from groq')] };
+  const a = await r.routeChat({ messages: msgs, mode: 'fast', requested: 'auto' });
+  assert.equal(a.result.provider, 'groq'); assert.match(a.notice, /Gemini usage limit reached, so Groq answered/);
+  assert.equal(n('googleapis'), 1);
+});
+t('Gemini + Groq both 429 -> OpenRouter answers; none of them retried', async () => {
+  const r = fresh(); process.env.GEMINI_API_KEY='g'; process.env.GROQ_API_KEY='gq'; process.env.OPENROUTER_API_KEY='or';
+  script = { 'googleapis': [gem429()], 'api.groq.com': [res(429,{error:{message:'Rate limit reached',type:'tokens'}},{'retry-after':'20'})], 'openrouter.ai': [oaiOk('from openrouter')] };
+  const a = await r.routeChat({ messages: msgs, mode: 'fast', requested: 'auto' });
+  assert.equal(a.result.provider, 'openrouter'); assert.equal(n('api.groq.com'), 1);
+  assert.equal(calls.find(c=>c.url.includes('openrouter.ai')).body.model.length > 0, true);
+});
+t('OpenRouter HTTP 200 with error body is treated as failure', async () => {
+  const r = fresh(); process.env.OPENROUTER_API_KEY='or';
+  script = { 'openrouter.ai': [res(200,{error:{code:429,message:'Rate limit exceeded: free-models-per-day'}})] };
+  await assert.rejects(r.routeChat({ messages: msgs, mode: 'fast', requested: 'auto' }), e => { assert.equal(e.code,'quota'); assert.match(e.message,/OpenRouter/); return true; });
+  assert.equal(n('openrouter.ai'), 1);
+});
+t('manual Groq selection goes first', async () => {
+  const r = fresh(); process.env.GEMINI_API_KEY='g'; process.env.GROQ_API_KEY='gq';
+  script = { 'googleapis': [gemOk('g')], 'api.groq.com': [oaiOk('q')] };
+  const a = await r.routeChat({ messages: msgs, mode: 'coding', requested: 'groq' });
+  assert.equal(a.result.provider, 'groq'); assert.equal(n('googleapis'), 0);
 });
 (async () => {
   let fail = 0;
