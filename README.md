@@ -54,3 +54,13 @@ Add authentication and PostgreSQL-backed conversations, then implement streaming
 
 ### Important production work still required
 This milestone is a development foundation, not a production security audit. Before public launch, add rate limiting and abuse protection to authentication and chat, email verification, password reset, CSRF/origin checks for state-changing endpoints, account deletion/export, session revocation, provider request timeouts, and monitoring. Configure database backups. Do not deploy publicly until these controls are completed and tested.
+
+## AI provider routing (new)
+
+All provider logic lives in `src/lib/ai/`. `src/app/api/chat/route.ts` only handles auth, validation and PostgreSQL.
+
+- Errors are classified: **429 / RESOURCE_EXHAUSTED / insufficient_quota = quota** (never retried, provider paused for `AI_QUOTA_COOLDOWN_SECONDS`, default 15 min), **500/502/503/504/529 = temporary** (up to 2 retries with backoff), **timeout** (1 retry), **401/403 = bad key** (provider disabled until redeploy).
+- When a provider fails, the next configured one answers (`AI_PROVIDER_ORDER`, default `gemini,anthropic,openai`). A manual provider choice is tried first, the others act as fallback.
+- Research mode runs one web search (Tavily, then Brave) and passes numbered sources to whichever provider answers. With no search key, Gemini's built-in Google Search is used; if Gemini is also unavailable, the answer carries a notice that it is not based on live sources.
+- If every provider fails, the user sees which providers failed and why.
+- Cooldown state is in memory per server process. Free tiers are limited: fallback only helps if more than one provider has a key.
