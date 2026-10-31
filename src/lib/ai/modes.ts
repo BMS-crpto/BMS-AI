@@ -35,7 +35,7 @@ export function systemPrompt(mode: ThinkingMode, extra?: string): string {
 
 /**
  * Default models. Every one can be overridden from Render env vars:
- *   GEMINI_MODEL, OPENAI_MODEL, ANTHROPIC_MODEL            (all modes)
+ *   GEMINI_MODEL, OPENAI_MODEL, ANTHROPIC_MODEL, GROQ_MODEL, OPENROUTER_MODEL            (all modes)
  *   GEMINI_MODEL_FAST / _THINKING / _CODING / _RESEARCH    (single mode)
  * Model names change often: verify them in each provider's current model list.
  */
@@ -57,6 +57,20 @@ const DEFAULTS: Record<ProviderId, Record<ThinkingMode, string>> = {
     thinking: 'claude-sonnet-5-5',
     coding: 'claude-sonnet-5-5',
     research: 'claude-sonnet-5-5',
+  },
+  // Free-tier providers. Their model catalogs change often: check the
+  // provider's current list and override with GROQ_MODEL / OPENROUTER_MODEL.
+  groq: {
+    fast: 'llama-3.3-70b-versatile',
+    thinking: 'llama-3.3-70b-versatile',
+    coding: 'llama-3.3-70b-versatile',
+    research: 'llama-3.3-70b-versatile',
+  },
+  openrouter: {
+    fast: 'meta-llama/llama-3.3-70b-instruct:free',
+    thinking: 'meta-llama/llama-3.3-70b-instruct:free',
+    coding: 'meta-llama/llama-3.3-70b-instruct:free',
+    research: 'meta-llama/llama-3.3-70b-instruct:free',
   },
 };
 

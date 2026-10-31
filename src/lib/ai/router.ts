@@ -4,7 +4,7 @@ import { callProvider, isConfigured } from './providers';
 import { formatSources, searchConfigured, webSearch } from './search';
 import type { ChatMessage, ProviderAttempt, ProviderId, ProviderResult, SearchSource, ThinkingMode } from './types';
 
-const ALL: ProviderId[] = ['gemini', 'openai', 'anthropic'];
+const ALL: ProviderId[] = ['gemini', 'groq', 'openrouter', 'anthropic', 'openai'];
 
 const PER_CALL_TIMEOUT_MS = Number(process.env.AI_TIMEOUT_MS) || 40_000;
 const TOTAL_BUDGET_MS = Number(process.env.AI_TOTAL_BUDGET_MS) || 85_000; // below typical 100s proxy limit
@@ -30,7 +30,7 @@ export class AllProvidersFailed extends Error {
 }
 
 function providerOrder(requested: string): ProviderId[] {
-  const configured = (process.env.AI_PROVIDER_ORDER || 'gemini,anthropic,openai')
+  const configured = (process.env.AI_PROVIDER_ORDER || 'gemini,groq,openrouter,anthropic,openai')
     .split(',')
     .map(s => s.trim().toLowerCase())
     .filter((s): s is ProviderId => (ALL as string[]).includes(s));

@@ -16,6 +16,8 @@ export type CallOptions = {
 export function isConfigured(provider: ProviderId): boolean {
   if (provider === 'gemini') return Boolean(process.env.GEMINI_API_KEY);
   if (provider === 'openai') return Boolean(process.env.OPENAI_API_KEY);
+  if (provider === 'groq') return Boolean(process.env.GROQ_API_KEY);
+  if (provider === 'openrouter') return Boolean(process.env.OPENROUTER_API_KEY);
   return Boolean(process.env.ANTHROPIC_API_KEY);
 }
 
@@ -77,12 +79,24 @@ async function callGemini(o: CallOptions): Promise<ProviderResult> {
   return { text: nonEmpty('gemini', text), provider: 'gemini', model, sources };
 }
 
-async function callOpenAI(o: CallOptions): Promise<ProviderResult> {
-  const model = modelFor('openai', o.mode);
+const COMPAT: Record<'openai' | 'groq' | 'openrouter', { url: string; key: () => string | undefined; extra?: Record<string, string> }> = {
+  openai: { url: 'https://api.openai.com/v1/chat/completions', key: () => process.env.OPENAI_API_KEY },
+  groq: { url: 'https://api.groq.com/openai/v1/chat/completions', key: () => process.env.GROQ_API_KEY },
+  openrouter: {
+    url: 'https://openrouter.ai/api/v1/chat/completions',
+    key: () => process.env.OPENROUTER_API_KEY,
+    extra: { 'X-Title': 'BMS AI' },
+  },
+};
+
+/** OpenAI, Groq and OpenRouter all speak the OpenAI chat-completions format. */
+async function callOpenAICompatible(provider: 'openai' | 'groq' | 'openrouter', o: CallOptions): Promise<ProviderResult> {
+  const cfg = COMPAT[provider];
+  const model = modelFor(provider, o.mode);
   const data = await post(
-    'openai',
-    'https://api.openai.com/v1/chat/completions',
-    { Authorization: `Bearer ${process.env.OPENAI_API_KEY}` },
+    provider,
+    cfg.url,
+    { Authorization: `Bearer ${cfg.key()}`, ...cfg.extra },
     {
       model,
       messages: [{ role: 'system', content: systemPrompt(o.mode, o.searchContext) }, ...o.messages],
@@ -90,8 +104,13 @@ async function callOpenAI(o: CallOptions): Promise<ProviderResult> {
     },
     o.timeoutMs
   );
+  // OpenRouter can answer HTTP 200 with an error body when the upstream model fails.
+  if (data?.error && !data?.choices) {
+    const code = Number(data.error.code);
+    throw classifyHttpError(provider, Number.isFinite(code) && code >= 400 ? code : 502, new Headers(), data);
+  }
   const text = data?.choices?.[0]?.message?.content;
-  return { text: nonEmpty('openai', typeof text === 'string' ? text : ''), provider: 'openai', model, sources: o.sources };
+  return { text: nonEmpty(provider, typeof text === 'string' ? text : ''), provider, model, sources: o.sources };
 }
 
 async function callAnthropic(o: CallOptions): Promise<ProviderResult> {
@@ -114,6 +133,6 @@ async function callAnthropic(o: CallOptions): Promise<ProviderResult> {
 
 export function callProvider(provider: ProviderId, o: CallOptions): Promise<ProviderResult> {
   if (provider === 'gemini') return callGemini(o);
-  if (provider === 'openai') return callOpenAI(o);
+  if (provider === 'openai' || provider === 'groq' || provider === 'openrouter') return callOpenAICompatible(provider, o);
   return callAnthropic(o);
 }

@@ -76,4 +76,6 @@ export const PROVIDER_LABEL: Record<ProviderId, string> = {
   gemini: 'Gemini',
   openai: 'OpenAI',
   anthropic: 'Claude',
+  groq: 'Groq',
+  openrouter: 'OpenRouter',
 };

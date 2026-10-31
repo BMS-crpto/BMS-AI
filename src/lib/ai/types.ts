@@ -1,4 +1,4 @@
-export type ProviderId = 'gemini' | 'openai' | 'anthropic';
+export type ProviderId = 'gemini' | 'openai' | 'anthropic' | 'groq' | 'openrouter';
 export type ThinkingMode = 'fast' | 'thinking' | 'coding' | 'research';
 
 export type ChatMessage = {
