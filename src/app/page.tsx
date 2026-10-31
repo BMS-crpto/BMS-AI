@@ -86,6 +86,7 @@ export default function Home() {
 
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  const [notice, setNotice] = useState('');
   const [sidebarOpen, setSidebarOpen] = useState(false);
 
   async function loadConversations() {
@@ -254,6 +255,7 @@ export default function Home() {
     setMessages(next);
     setInput('');
     setError('');
+    setNotice('');
     setBusy(true);
 
     try {
@@ -279,6 +281,7 @@ export default function Home() {
       }
 
       setConversationId(data.conversationId);
+      setNotice(data.notice || '');
 
       setMessages([
         ...next,
@@ -680,6 +683,15 @@ export default function Home() {
           {error && (
             <div className="error" role="alert">
               {error}
+            </div>
+          )}
+
+          {notice && !error && (
+            <div
+              role="status"
+              style={{ fontSize: 13, opacity: 0.75, padding: '0 4px 8px' }}
+            >
+              {notice}
             </div>
           )}
 
