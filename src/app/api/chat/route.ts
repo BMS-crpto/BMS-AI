@@ -4,7 +4,8 @@ import { prisma } from '@/lib/prisma';
 
 export const runtime = 'nodejs';
 
-type Provider = 'openai' | 'anthropic' | 'gemini';
+type Provider = 'gemini' | 'openai' | 'anthropic';
+
 type ThinkingMode = 'fast' | 'thinking' | 'coding' | 'research';
 
 type ChatMessage = {
@@ -12,36 +13,34 @@ type ChatMessage = {
   content: string;
 };
 
-// ======================================
-// PROVIDER AVAILABILITY
-// ======================================
-
-function available(provider: Provider): boolean {
-  if (provider === 'gemini') {
-    return Boolean(process.env.GEMINI_API_KEY);
-  }
-
-  if (provider === 'anthropic') {
-    return Boolean(process.env.ANTHROPIC_API_KEY);
-  }
-
-  return Boolean(process.env.OPENAI_API_KEY);
-}
+const GEMINI_MODEL = 'gemini-3.8-flash';
 
 // ======================================
 // PROVIDER SELECTION
 // ======================================
 
+function isAvailable(provider: Provider): boolean {
+  if (provider === 'gemini') {
+    return Boolean(process.env.GEMINI_API_KEY);
+  }
+
+  if (provider === 'openai') {
+    return Boolean(process.env.OPENAI_API_KEY);
+  }
+
+  return Boolean(process.env.ANTHROPIC_API_KEY);
+}
+
 function chooseProvider(requested: string): Provider {
-  if (requested === 'auto' || !requested) {
-    // Gemini first because OpenAI has no credits.
+  if (requested === 'auto') {
+    // Gemini is the primary provider.
     const order: Provider[] = [
       'gemini',
       'anthropic',
       'openai',
     ];
 
-    const selected = order.find(available);
+    const selected = order.find(isAvailable);
 
     if (!selected) {
       throw new Error(
@@ -58,66 +57,111 @@ function chooseProvider(requested: string): Provider {
     throw new Error('Invalid AI provider selected.');
   }
 
-  const selected = requested as Provider;
+  const provider = requested as Provider;
 
-  if (!available(selected)) {
+  if (!isAvailable(provider)) {
     throw new Error(
-      `${selected} is not configured in Render.`
+      `${provider} is not configured in Render.`
     );
   }
 
-  return selected;
+  return provider;
 }
 
 // ======================================
-// THINKING MODE INSTRUCTIONS
+// MODE CONFIGURATION
 // ======================================
 
-function getModeInstructions(mode: ThinkingMode): string {
+function getThinkingLevel(mode: ThinkingMode) {
   switch (mode) {
     case 'fast':
-      return `
-You are BMS AI in Fast mode.
-Answer quickly, clearly and accurately.
-Keep simple answers concise.
-`;
+      return 'low';
 
     case 'thinking':
-      return `
-You are BMS AI in Deep Thinking mode.
-Carefully analyze difficult questions.
-Consider relevant alternatives and check your reasoning.
-Give accurate, structured and detailed answers.
-Do not reveal private internal reasoning.
-`;
+      return 'high';
 
     case 'coding':
-      return `
-You are BMS AI in Coding mode.
-Act as an expert software developer.
-Write clean, working and secure code.
-Explain where files belong and how to run the code.
-When fixing errors, identify the cause and provide a complete correction.
-`;
+      return 'medium';
 
     case 'research':
-      return `
-You are BMS AI in Research mode.
-Provide structured, evidence-conscious research assistance.
-Separate established facts from uncertainty.
-Mention when information may be outdated.
-Do not invent sources, citations or live web searches.
-`;
+      return 'high';
 
     default:
-      return `
-You are BMS AI, a helpful and intelligent assistant.
-`;
+      return 'medium';
   }
 }
 
+function getSystemInstruction(mode: ThinkingMode) {
+  const base = `
+You are BMS AI, a capable, helpful and accurate AI assistant.
+
+Your responsibilities:
+- Answer questions clearly and accurately.
+- Admit uncertainty instead of inventing facts.
+- Give useful explanations and examples.
+- Follow the user's instructions.
+- Never fabricate sources, statistics or quotations.
+- Do not reveal private internal reasoning.
+`;
+
+  const instructions: Record<ThinkingMode, string> = {
+    fast: `
+${base}
+
+MODE: FAST
+
+Prioritize speed and clarity.
+Give direct answers.
+Avoid unnecessary explanations.
+`,
+
+    thinking: `
+${base}
+
+MODE: DEEP THINKING
+
+Carefully analyze complex questions.
+Check assumptions and consider alternatives.
+Explain important conclusions clearly.
+Give structured, detailed answers when appropriate.
+`,
+
+    coding: `
+${base}
+
+MODE: CODING
+
+Act as a senior software engineer.
+
+Write reliable, maintainable and secure code.
+Explain which files need to be changed.
+When fixing errors, identify the actual cause.
+Prefer complete working solutions over incomplete snippets.
+Consider performance, accessibility and security.
+`,
+
+    research: `
+${base}
+
+MODE: LIVE RESEARCH
+
+Use Google Search to investigate questions that need current information.
+
+Research carefully.
+Compare reliable sources.
+Distinguish verified information from estimates.
+Include dates when discussing changing information.
+Never pretend to have searched if no search was performed.
+Present findings in a clear, structured format.
+`,
+
+  };
+
+  return instructions[mode];
+}
+
 // ======================================
-// EXTRACT GEMINI RESPONSE
+// GEMINI RESPONSE EXTRACTION
 // ======================================
 
 function extractGeminiText(data: any): string {
@@ -156,140 +200,116 @@ async function callGemini(
     throw new Error('GEMINI_API_KEY is missing in Render.');
   }
 
-  const models = [
-    'gemini-3.8-flash',
-    'gemini-3.6-flash',
-    'gemini-2.5-flash',
-  ];
+  const input = messages.map(message => ({
+    role: message.role === 'user' ? 'user' : 'model',
+    content: [
+      {
+        type: 'text',
+        text: message.content,
+      },
+    ],
+  }));
 
-  const conversation = messages
-    .map(message => {
-      const speaker =
-        message.role === 'user'
-          ? 'User'
-          : 'Assistant';
+  const requestBody: Record<string, any> = {
+    model: GEMINI_MODEL,
+    input,
+    system_instruction: getSystemInstruction(mode),
+    generation_config: {
+      thinking_level: getThinkingLevel(mode),
+      max_output_tokens: 4000,
+    },
+    store: false,
+  };
 
-      return `${speaker}: ${message.content}`;
-    })
-    .join('\n\n');
-
-  const thinkingLevel =
-    mode === 'fast'
-      ? 'low'
-      : mode === 'thinking'
-        ? 'high'
-        : 'medium';
-
-  let lastError = 'Gemini could not generate a response.';
-
-  for (const model of models) {
-    try {
-      console.log(`BMS AI trying Gemini: ${model}`);
-
-      const response = await fetch(
-        'https://generativelanguage.googleapis.com/v1beta/interactions',
-        {
-          method: 'POST',
-          headers: {
-            'x-goog-api-key': apiKey,
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            model,
-            input: conversation,
-            system_instruction: getModeInstructions(mode),
-            generation_config: {
-              thinking_level: thinkingLevel,
-              max_output_tokens: 3000,
-            },
-            store: false,
-          }),
-          signal: AbortSignal.timeout(25000),
-        }
-      );
-
-      const data = await response.json();
-
-      if (!response.ok) {
-        const message =
-          data.error?.message ||
-          `Gemini returned HTTP ${response.status}.`;
-
-        lastError = message;
-
-        console.error(
-          `Gemini ${model} error:`,
-          message
-        );
-
-        if (
-          [404, 429, 500, 502, 503, 504].includes(
-            response.status
-          )
-        ) {
-          continue;
-        }
-
-        throw new Error(message);
-      }
-
-      const reply = extractGeminiText(data);
-
-      if (!reply.trim()) {
-        lastError = `${model} returned an empty response.`;
-        continue;
-      }
-
-      console.log(`BMS AI successfully used ${model}.`);
-
-      return reply;
-
-    } catch (error) {
-      const message =
-        error instanceof Error
-          ? error.message
-          : 'Unknown Gemini error.';
-
-      lastError = message;
-
-      console.error(
-        `Gemini ${model} failed:`,
-        message
-      );
-
-      if (
-        error instanceof Error &&
-        error.name === 'TimeoutError'
-      ) {
-        lastError = `${model} timed out. Trying another model.`;
-        continue;
-      }
-
-      if (
-        error instanceof Error &&
-        error.name === 'AbortError'
-      ) {
-        continue;
-      }
-
-      if (
-        message.includes('fetch failed') ||
-        message.includes('network')
-      ) {
-        continue;
-      }
-
-      throw error;
-    }
+  // Enable real Google Search in Research mode.
+  if (mode === 'research') {
+    requestBody.tools = [
+      {
+        type: 'google_search',
+        search_types: ['web_search'],
+      },
+    ];
   }
 
-  throw new Error(
-    `Gemini is temporarily unavailable. ${lastError}`
+  console.log(
+    `BMS AI: Gemini ${GEMINI_MODEL}, mode=${mode}`
   );
+
+  let response: Response;
+
+  try {
+    response = await fetch(
+      'https://generativelanguage.googleapis.com/v1beta/interactions',
+      {
+        method: 'POST',
+        headers: {
+          'x-goog-api-key': apiKey,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(requestBody),
+        signal: AbortSignal.timeout(55000),
+      }
+    );
+  } catch (error) {
+    if (
+      error instanceof Error &&
+      error.name === 'TimeoutError'
+    ) {
+      throw new Error(
+        'Gemini took too long to respond. Please try again.'
+      );
+    }
+
+    throw new Error(
+      'Could not connect to Gemini. Check your server connection.'
+    );
+  }
+
+  const data = await response.json().catch(() => ({}));
+
+  if (!response.ok) {
+    const message =
+      data?.error?.message ||
+      `Gemini API returned HTTP ${response.status}.`;
+
+    console.error('Gemini API error:', message);
+
+    if (response.status === 429) {
+      throw new Error(
+        'Gemini usage limit reached or the service is busy. Please try again later.'
+      );
+    }
+
+    if (response.status === 401 || response.status === 403) {
+      throw new Error(
+        'Gemini API authentication failed. Check the API key in Render.'
+      );
+    }
+
+    if (response.status === 404) {
+      throw new Error(
+        `Gemini model or endpoint not found: ${message}`
+      );
+    }
+
+    throw new Error(message);
+  }
+
+  const reply = extractGeminiText(data);
+
+  if (!reply.trim()) {
+    throw new Error(
+      'Gemini completed the request but returned no text.'
+    );
+  }
+
+  console.log('BMS AI Gemini response successful.');
+
+  return reply;
 }
 
 // ======================================
-// OPENAI
+// OPENAI BACKUP
 // ======================================
 
 async function callOpenAI(
@@ -309,7 +329,7 @@ async function callOpenAI(
         messages: [
           {
             role: 'system',
-            content: getModeInstructions(mode),
+            content: getSystemInstruction(mode),
           },
           ...messages,
         ],
@@ -318,7 +338,7 @@ async function callOpenAI(
     }
   );
 
-  const data = await response.json();
+  const data = await response.json().catch(() => ({}));
 
   if (!response.ok) {
     throw new Error(
@@ -336,7 +356,7 @@ async function callOpenAI(
 }
 
 // ======================================
-// ANTHROPIC
+// ANTHROPIC BACKUP
 // ======================================
 
 async function callAnthropic(
@@ -357,32 +377,28 @@ async function callAnthropic(
           process.env.ANTHROPIC_MODEL ||
           'claude-3-5-haiku-latest',
         max_tokens: 2000,
-        system: getModeInstructions(mode),
+        system: getSystemInstruction(mode),
         messages,
       }),
       signal: AbortSignal.timeout(30000),
     }
   );
 
-  const data = await response.json();
+  const data = await response.json().catch(() => ({}));
 
   if (!response.ok) {
     throw new Error(
-      data.error?.message || 'Claude request failed.'
+      data.error?.message || 'Anthropic request failed.'
     );
   }
 
   const reply = (data.content || [])
-    .filter(
-      (part: any) => part.type === 'text'
-    )
-    .map(
-      (part: any) => part.text || ''
-    )
+    .filter((part: any) => part.type === 'text')
+    .map((part: any) => part.text || '')
     .join('\n');
 
   if (!reply.trim()) {
-    throw new Error('Claude returned an empty response.');
+    throw new Error('Anthropic returned an empty response.');
   }
 
   return reply;
@@ -394,7 +410,7 @@ async function callAnthropic(
 
 export async function POST(request: NextRequest) {
   try {
-    // Check authentication
+    // Authentication
     const userId = await getSessionUserId();
 
     if (!userId) {
@@ -404,19 +420,15 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Read request
-    const body = await request.json() as {
-      messages?: ChatMessage[];
-      provider?: string;
-      conversationId?: string;
-      thinkingMode?: string;
-    };
+    // Request body
+    const body = await request.json();
 
-    // Validate messages
+    const messages = body.messages as ChatMessage[];
+
     if (
-      !Array.isArray(body.messages) ||
-      body.messages.length === 0 ||
-      body.messages.length > 40
+      !Array.isArray(messages) ||
+      messages.length === 0 ||
+      messages.length > 40
     ) {
       return NextResponse.json(
         { error: 'Send between 1 and 40 messages.' },
@@ -424,33 +436,33 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const messages = body.messages.filter(message =>
-      message &&
-      (message.role === 'user' ||
-        message.role === 'assistant') &&
-      typeof message.content === 'string'
-    );
-
-    if (
-      messages.length !== body.messages.length ||
-      messages.some(message =>
+    // Message validation
+    for (const message of messages) {
+      if (
+        !message ||
+        !['user', 'assistant'].includes(message.role) ||
+        typeof message.content !== 'string' ||
         message.content.length > 20000
-      )
-    ) {
-      return NextResponse.json(
-        { error: 'One or more messages are invalid or too long.' },
-        { status: 400 }
-      );
+      ) {
+        return NextResponse.json(
+          { error: 'Invalid message content.' },
+          { status: 400 }
+        );
+      }
     }
 
-    if (!messages.some(message => message.role === 'user')) {
+    const lastUser = [...messages]
+      .reverse()
+      .find(message => message.role === 'user');
+
+    if (!lastUser) {
       return NextResponse.json(
         { error: 'A user message is required.' },
         { status: 400 }
       );
     }
 
-    // Validate thinking mode
+    // Thinking mode validation
     const allowedModes: ThinkingMode[] = [
       'fast',
       'thinking',
@@ -458,13 +470,12 @@ export async function POST(request: NextRequest) {
       'research',
     ];
 
-    const mode = allowedModes.includes(
-      body.thinkingMode as ThinkingMode
-    )
-      ? body.thinkingMode as ThinkingMode
-      : 'thinking';
+    const mode: ThinkingMode =
+      allowedModes.includes(body.thinkingMode)
+        ? body.thinkingMode
+        : 'thinking';
 
-    // Select provider
+    // Provider selection
     let provider: Provider;
 
     try {
@@ -480,23 +491,11 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Get latest user message
-    const lastUser = [...messages]
-      .reverse()
-      .find(message => message.role === 'user');
-
-    if (!lastUser) {
-      return NextResponse.json(
-        { error: 'A user message is required.' },
-        { status: 400 }
-      );
-    }
-
-    // Find or create conversation
+    // Conversation management
     let conversationId: string;
 
     if (body.conversationId) {
-      const owned = await prisma.conversation.findFirst({
+      const conversation = await prisma.conversation.findFirst({
         where: {
           id: body.conversationId,
           userId,
@@ -506,14 +505,14 @@ export async function POST(request: NextRequest) {
         },
       });
 
-      if (!owned) {
+      if (!conversation) {
         return NextResponse.json(
           { error: 'Conversation not found.' },
           { status: 404 }
         );
       }
 
-      conversationId = owned.id;
+      conversationId = conversation.id;
 
     } else {
       const conversation = await prisma.conversation.create({
@@ -526,7 +525,7 @@ export async function POST(request: NextRequest) {
       conversationId = conversation.id;
     }
 
-    // Generate AI response
+    // Generate response
     let reply: string;
 
     if (provider === 'gemini') {
@@ -537,7 +536,7 @@ export async function POST(request: NextRequest) {
       reply = await callAnthropic(messages, mode);
     }
 
-    // Save successful messages
+    // Save successful exchange
     await prisma.message.createMany({
       data: [
         {
@@ -554,7 +553,6 @@ export async function POST(request: NextRequest) {
       ],
     });
 
-    // Update conversation
     await prisma.conversation.update({
       where: {
         id: conversationId,
@@ -580,7 +578,9 @@ export async function POST(request: NextRequest) {
         : 'Unexpected server error.';
 
     const status =
-      message.toLowerCase().includes('temporarily unavailable') ||
+      message.toLowerCase().includes('limit') ||
+      message.toLowerCase().includes('busy') ||
+      message.toLowerCase().includes('too long') ||
       message.toLowerCase().includes('timed out')
         ? 503
         : 500;
@@ -590,4 +590,4 @@ export async function POST(request: NextRequest) {
       { status }
     );
   }
-      }
+            }
