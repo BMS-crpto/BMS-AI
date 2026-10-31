@@ -5,6 +5,7 @@ import { prisma } from '@/lib/prisma';
 export const runtime = 'nodejs';
 
 type Provider = 'openai' | 'anthropic' | 'gemini';
+type ThinkingMode = 'fast' | 'thinking' | 'coding' | 'research';
 
 type ChatMessage = {
   role: 'user' | 'assistant';
@@ -16,39 +17,44 @@ type ChatMessage = {
 // ======================================
 
 function available(provider: Provider): boolean {
-  if (provider === 'openai') {
-    return Boolean(process.env.OPENAI_API_KEY);
+  if (provider === 'gemini') {
+    return Boolean(process.env.GEMINI_API_KEY);
   }
 
   if (provider === 'anthropic') {
     return Boolean(process.env.ANTHROPIC_API_KEY);
   }
 
-  return Boolean(process.env.GEMINI_API_KEY);
+  return Boolean(process.env.OPENAI_API_KEY);
 }
 
 // ======================================
-// SELECT AI PROVIDER
+// PROVIDER SELECTION
 // ======================================
 
 function chooseProvider(requested: string): Provider {
-  const providers: Provider[] = [
-    'openai',
-    'anthropic',
-    'gemini',
-  ];
+  if (requested === 'auto' || !requested) {
+    // Gemini first because OpenAI has no credits.
+    const order: Provider[] = [
+      'gemini',
+      'anthropic',
+      'openai',
+    ];
 
-  if (requested === 'auto') {
-    const selected = providers.find(available);
+    const selected = order.find(available);
 
-    if (selected) return selected;
+    if (!selected) {
+      throw new Error(
+        'No AI provider is configured. Check your Render environment variables.'
+      );
+    }
 
-    throw new Error(
-      'No AI provider is configured. Add an API key in Render.'
-    );
+    return selected;
   }
 
-  if (!providers.includes(requested as Provider)) {
+  if (
+    !['gemini', 'openai', 'anthropic'].includes(requested)
+  ) {
     throw new Error('Invalid AI provider selected.');
   }
 
@@ -56,7 +62,7 @@ function chooseProvider(requested: string): Provider {
 
   if (!available(selected)) {
     throw new Error(
-      `${selected} is not configured. Add its API key in Render.`
+      `${selected} is not configured in Render.`
     );
   }
 
@@ -64,10 +70,232 @@ function chooseProvider(requested: string): Provider {
 }
 
 // ======================================
+// THINKING MODE INSTRUCTIONS
+// ======================================
+
+function getModeInstructions(mode: ThinkingMode): string {
+  switch (mode) {
+    case 'fast':
+      return `
+You are BMS AI in Fast mode.
+Answer quickly, clearly and accurately.
+Keep simple answers concise.
+`;
+
+    case 'thinking':
+      return `
+You are BMS AI in Deep Thinking mode.
+Carefully analyze difficult questions.
+Consider relevant alternatives and check your reasoning.
+Give accurate, structured and detailed answers.
+Do not reveal private internal reasoning.
+`;
+
+    case 'coding':
+      return `
+You are BMS AI in Coding mode.
+Act as an expert software developer.
+Write clean, working and secure code.
+Explain where files belong and how to run the code.
+When fixing errors, identify the cause and provide a complete correction.
+`;
+
+    case 'research':
+      return `
+You are BMS AI in Research mode.
+Provide structured, evidence-conscious research assistance.
+Separate established facts from uncertainty.
+Mention when information may be outdated.
+Do not invent sources, citations or live web searches.
+`;
+
+    default:
+      return `
+You are BMS AI, a helpful and intelligent assistant.
+`;
+  }
+}
+
+// ======================================
+// EXTRACT GEMINI RESPONSE
+// ======================================
+
+function extractGeminiText(data: any): string {
+  if (
+    typeof data.output_text === 'string' &&
+    data.output_text.trim()
+  ) {
+    return data.output_text;
+  }
+
+  const steps = Array.isArray(data.steps)
+    ? data.steps
+    : [];
+
+  return steps
+    .filter((step: any) => step.type === 'model_output')
+    .flatMap((step: any) =>
+      Array.isArray(step.content) ? step.content : []
+    )
+    .filter((part: any) => part.type === 'text')
+    .map((part: any) => part.text || '')
+    .join('\n');
+}
+
+// ======================================
+// GEMINI AI
+// ======================================
+
+async function callGemini(
+  messages: ChatMessage[],
+  mode: ThinkingMode
+): Promise<string> {
+  const apiKey = process.env.GEMINI_API_KEY;
+
+  if (!apiKey) {
+    throw new Error('GEMINI_API_KEY is missing in Render.');
+  }
+
+  const models = [
+    'gemini-3.8-flash',
+    'gemini-3.6-flash',
+    'gemini-2.5-flash',
+  ];
+
+  const conversation = messages
+    .map(message => {
+      const speaker =
+        message.role === 'user'
+          ? 'User'
+          : 'Assistant';
+
+      return `${speaker}: ${message.content}`;
+    })
+    .join('\n\n');
+
+  const thinkingLevel =
+    mode === 'fast'
+      ? 'low'
+      : mode === 'thinking'
+        ? 'high'
+        : 'medium';
+
+  let lastError = 'Gemini could not generate a response.';
+
+  for (const model of models) {
+    try {
+      console.log(`BMS AI trying Gemini: ${model}`);
+
+      const response = await fetch(
+        'https://generativelanguage.googleapis.com/v1beta/interactions',
+        {
+          method: 'POST',
+          headers: {
+            'x-goog-api-key': apiKey,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            model,
+            input: conversation,
+            system_instruction: getModeInstructions(mode),
+            generation_config: {
+              thinking_level: thinkingLevel,
+              max_output_tokens: 3000,
+            },
+            store: false,
+          }),
+          signal: AbortSignal.timeout(25000),
+        }
+      );
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        const message =
+          data.error?.message ||
+          `Gemini returned HTTP ${response.status}.`;
+
+        lastError = message;
+
+        console.error(
+          `Gemini ${model} error:`,
+          message
+        );
+
+        if (
+          [404, 429, 500, 502, 503, 504].includes(
+            response.status
+          )
+        ) {
+          continue;
+        }
+
+        throw new Error(message);
+      }
+
+      const reply = extractGeminiText(data);
+
+      if (!reply.trim()) {
+        lastError = `${model} returned an empty response.`;
+        continue;
+      }
+
+      console.log(`BMS AI successfully used ${model}.`);
+
+      return reply;
+
+    } catch (error) {
+      const message =
+        error instanceof Error
+          ? error.message
+          : 'Unknown Gemini error.';
+
+      lastError = message;
+
+      console.error(
+        `Gemini ${model} failed:`,
+        message
+      );
+
+      if (
+        error instanceof Error &&
+        error.name === 'TimeoutError'
+      ) {
+        lastError = `${model} timed out. Trying another model.`;
+        continue;
+      }
+
+      if (
+        error instanceof Error &&
+        error.name === 'AbortError'
+      ) {
+        continue;
+      }
+
+      if (
+        message.includes('fetch failed') ||
+        message.includes('network')
+      ) {
+        continue;
+      }
+
+      throw error;
+    }
+  }
+
+  throw new Error(
+    `Gemini is temporarily unavailable. ${lastError}`
+  );
+}
+
+// ======================================
 // OPENAI
 // ======================================
 
-async function callOpenAI(messages: ChatMessage[]) {
+async function callOpenAI(
+  messages: ChatMessage[],
+  mode: ThinkingMode
+): Promise<string> {
   const response = await fetch(
     'https://api.openai.com/v1/chat/completions',
     {
@@ -78,8 +306,15 @@ async function callOpenAI(messages: ChatMessage[]) {
       },
       body: JSON.stringify({
         model: process.env.BMS_DEFAULT_MODEL || 'gpt-4o-mini',
-        messages,
+        messages: [
+          {
+            role: 'system',
+            content: getModeInstructions(mode),
+          },
+          ...messages,
+        ],
       }),
+      signal: AbortSignal.timeout(30000),
     }
   );
 
@@ -101,10 +336,13 @@ async function callOpenAI(messages: ChatMessage[]) {
 }
 
 // ======================================
-// CLAUDE / ANTHROPIC
+// ANTHROPIC
 // ======================================
 
-async function callAnthropic(messages: ChatMessage[]) {
+async function callAnthropic(
+  messages: ChatMessage[],
+  mode: ThinkingMode
+): Promise<string> {
   const response = await fetch(
     'https://api.anthropic.com/v1/messages',
     {
@@ -119,11 +357,10 @@ async function callAnthropic(messages: ChatMessage[]) {
           process.env.ANTHROPIC_MODEL ||
           'claude-3-5-haiku-latest',
         max_tokens: 2000,
-        messages: messages.map(message => ({
-          role: message.role,
-          content: message.content,
-        })),
+        system: getModeInstructions(mode),
+        messages,
       }),
+      signal: AbortSignal.timeout(30000),
     }
   );
 
@@ -137,10 +374,10 @@ async function callAnthropic(messages: ChatMessage[]) {
 
   const reply = (data.content || [])
     .filter(
-      (part: { type: string }) => part.type === 'text'
+      (part: any) => part.type === 'text'
     )
     .map(
-      (part: { text: string }) => part.text
+      (part: any) => part.text || ''
     )
     .join('\n');
 
@@ -152,141 +389,12 @@ async function callAnthropic(messages: ChatMessage[]) {
 }
 
 // ======================================
-// GEMINI RESPONSE EXTRACTION
-// ======================================
-
-function extractGeminiText(data: any): string {
-  if (typeof data.output_text === 'string') {
-    return data.output_text;
-  }
-
-  const steps = Array.isArray(data.steps) ? data.steps : [];
-
-  return steps
-    .filter((step: any) => step.type === 'model_output')
-    .flatMap((step: any) =>
-      Array.isArray(step.content) ? step.content : []
-    )
-    .filter((part: any) => part.type === 'text')
-    .map((part: any) => part.text || '')
-    .join('');
-}
-
-// ======================================
-// GEMINI WITH AUTOMATIC BACKUP MODELS
-// ======================================
-
-async function callGemini(messages: ChatMessage[]) {
-  const apiKey = process.env.GEMINI_API_KEY;
-
-  if (!apiKey) {
-    throw new Error('GEMINI_API_KEY is missing in Render.');
-  }
-
-  const models = [
-    'gemini-3.8-flash',
-    'gemini-3.6-flash',
-    'gemini-3.5-flash-lite',
-    'gemini-3.1-flash-lite',
-    'gemini-2.5-flash',
-  ];
-
-  const conversation = messages
-    .map(message => {
-      const speaker =
-        message.role === 'user' ? 'User' : 'Assistant';
-
-      return `${speaker}: ${message.content}`;
-    })
-    .join('\n\n');
-
-  let lastError = 'All Gemini models are unavailable.';
-
-  for (const model of models) {
-    try {
-      console.log(`BMS AI trying Gemini model: ${model}`);
-
-      const response = await fetch(
-        'https://generativelanguage.googleapis.com/v1beta/interactions',
-        {
-          method: 'POST',
-          headers: {
-            'x-goog-api-key': apiKey,
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            model,
-            input: conversation,
-          }),
-          signal: AbortSignal.timeout(90000),
-        }
-      );
-
-      const data = await response.json();
-
-      if (!response.ok) {
-        const message =
-          data.error?.message || 'Gemini request failed.';
-
-        lastError = message;
-
-        if (
-          [404, 429, 500, 502, 503, 504].includes(response.status)
-        ) {
-          console.warn(
-            `Gemini ${model} unavailable. Trying backup model.`
-          );
-
-          continue;
-        }
-
-        throw new Error(message);
-      }
-
-      const reply = extractGeminiText(data);
-
-      if (reply.trim()) {
-        console.log(`BMS AI successfully used ${model}.`);
-        return reply;
-      }
-
-      lastError = `${model} returned an empty response.`;
-
-    } catch (error) {
-      if (
-        error instanceof Error &&
-        error.name === 'AbortError'
-      ) {
-        lastError = `${model} timed out.`;
-        continue;
-      }
-
-      if (
-        error instanceof Error &&
-        !error.message.includes('fetch')
-      ) {
-        throw error;
-      }
-
-      lastError =
-        error instanceof Error
-          ? error.message
-          : 'Gemini connection failed.';
-    }
-  }
-
-  throw new Error(
-    `All Gemini backup models failed. ${lastError}`
-  );
-}
-
-// ======================================
 // MAIN CHAT API
 // ======================================
 
 export async function POST(request: NextRequest) {
   try {
-    // Check login
+    // Check authentication
     const userId = await getSessionUserId();
 
     if (!userId) {
@@ -301,8 +409,10 @@ export async function POST(request: NextRequest) {
       messages?: ChatMessage[];
       provider?: string;
       conversationId?: string;
+      thinkingMode?: string;
     };
 
+    // Validate messages
     if (
       !Array.isArray(body.messages) ||
       body.messages.length === 0 ||
@@ -314,7 +424,6 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Validate messages
     const messages = body.messages.filter(message =>
       message &&
       (message.role === 'user' ||
@@ -324,7 +433,9 @@ export async function POST(request: NextRequest) {
 
     if (
       messages.length !== body.messages.length ||
-      messages.some(message => message.content.length > 20000)
+      messages.some(message =>
+        message.content.length > 20000
+      )
     ) {
       return NextResponse.json(
         { error: 'One or more messages are invalid or too long.' },
@@ -339,6 +450,20 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    // Validate thinking mode
+    const allowedModes: ThinkingMode[] = [
+      'fast',
+      'thinking',
+      'coding',
+      'research',
+    ];
+
+    const mode = allowedModes.includes(
+      body.thinkingMode as ThinkingMode
+    )
+      ? body.thinkingMode as ThinkingMode
+      : 'thinking';
+
     // Select provider
     let provider: Provider;
 
@@ -347,50 +472,12 @@ export async function POST(request: NextRequest) {
     } catch (error) {
       return NextResponse.json(
         {
-          error:
-            error instanceof Error
-              ? error.message
-              : 'AI provider unavailable.',
+          error: error instanceof Error
+            ? error.message
+            : 'AI provider unavailable.',
         },
         { status: 503 }
       );
-    }
-
-    // Find or create conversation
-    let conversationId = body.conversationId;
-
-    if (conversationId) {
-      const owned = await prisma.conversation.findFirst({
-        where: {
-          id: conversationId,
-          userId,
-        },
-        select: {
-          id: true,
-        },
-      });
-
-      if (!owned) {
-        return NextResponse.json(
-          { error: 'Conversation not found.' },
-          { status: 404 }
-        );
-      }
-
-    } else {
-      const firstUserText =
-        messages.find(message =>
-          message.role === 'user'
-        )?.content || 'New chat';
-
-      const conversation = await prisma.conversation.create({
-        data: {
-          userId,
-          title: firstUserText.slice(0, 64),
-        },
-      });
-
-      conversationId = conversation.id;
     }
 
     // Get latest user message
@@ -405,13 +492,50 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Call AI
-    const reply =
-      provider === 'openai'
-        ? await callOpenAI(messages)
-        : provider === 'anthropic'
-          ? await callAnthropic(messages)
-          : await callGemini(messages);
+    // Find or create conversation
+    let conversationId: string;
+
+    if (body.conversationId) {
+      const owned = await prisma.conversation.findFirst({
+        where: {
+          id: body.conversationId,
+          userId,
+        },
+        select: {
+          id: true,
+        },
+      });
+
+      if (!owned) {
+        return NextResponse.json(
+          { error: 'Conversation not found.' },
+          { status: 404 }
+        );
+      }
+
+      conversationId = owned.id;
+
+    } else {
+      const conversation = await prisma.conversation.create({
+        data: {
+          userId,
+          title: lastUser.content.slice(0, 64) || 'New chat',
+        },
+      });
+
+      conversationId = conversation.id;
+    }
+
+    // Generate AI response
+    let reply: string;
+
+    if (provider === 'gemini') {
+      reply = await callGemini(messages, mode);
+    } else if (provider === 'openai') {
+      reply = await callOpenAI(messages, mode);
+    } else {
+      reply = await callAnthropic(messages, mode);
+    }
 
     // Save successful messages
     await prisma.message.createMany({
@@ -440,11 +564,11 @@ export async function POST(request: NextRequest) {
       },
     });
 
-    // Return response
     return NextResponse.json({
       reply,
       provider,
       conversationId,
+      thinkingMode: mode,
     });
 
   } catch (error) {
@@ -455,9 +579,15 @@ export async function POST(request: NextRequest) {
         ? error.message
         : 'Unexpected server error.';
 
+    const status =
+      message.toLowerCase().includes('temporarily unavailable') ||
+      message.toLowerCase().includes('timed out')
+        ? 503
+        : 500;
+
     return NextResponse.json(
       { error: message },
-      { status: 500 }
+      { status }
     );
   }
-  }
+      }
