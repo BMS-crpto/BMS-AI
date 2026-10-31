@@ -15,7 +15,9 @@ type Provider =
   | 'auto'
   | 'openai'
   | 'anthropic'
-  | 'gemini';
+  | 'gemini'
+  | 'groq'
+  | 'openrouter';
 
 type ThinkingMode =
   | 'fast'
@@ -578,6 +580,14 @@ export default function Home() {
 
               <option value="gemini">
                 Gemini
+              </option>
+
+              <option value="groq">
+                Groq
+              </option>
+
+              <option value="openrouter">
+                OpenRouter
               </option>
 
               <option value="openai">
