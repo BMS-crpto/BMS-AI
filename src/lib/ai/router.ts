@@ -98,6 +98,7 @@ export async function routeChat(input: {
   messages: ChatMessage[];
   mode: ThinkingMode;
   requested: string;
+  extraContext?: string;
 }): Promise<RouteSuccess> {
   const { messages, mode, requested } = input;
   const startedAt = Date.now();
@@ -116,6 +117,7 @@ export async function routeChat(input: {
     }
   }
   const searchUnavailable = mode === 'research' && !sources;
+  if (input.extraContext) searchContext = [input.extraContext, searchContext].filter(Boolean).join('\n\n');
 
   // ---- Provider loop
   for (const provider of providerOrder(requested)) {
