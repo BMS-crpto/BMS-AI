@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getSessionUserId } from '@/lib/auth';
 import { prisma } from '@/lib/prisma';
 import { AllProvidersFailed, routeChat } from '@/lib/ai/router';
+import { buildLinkContext } from '@/lib/ai/fetchUrl';
 import type { ChatMessage, ThinkingMode } from '@/lib/ai/types';
 
 export const runtime = 'nodejs';
@@ -53,7 +54,8 @@ export async function POST(request: NextRequest) {
     }
 
     // Provider routing, fallback, retries and quota handling live in src/lib/ai.
-    const { result, notice } = await routeChat({ messages, mode, requested });
+    const extraContext = await buildLinkContext(lastUser.content).catch(() => undefined);
+    const { result, notice } = await routeChat({ messages, mode, requested, extraContext });
 
     // Only now touch the database, so a failed AI call leaves no empty chats behind.
     if (!conversationId) {
