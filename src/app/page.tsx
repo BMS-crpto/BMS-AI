@@ -6,6 +6,8 @@ import {
   useState,
 } from 'react';
 
+import Markdown from './Markdown';
+
 type Message = {
   role: 'user' | 'assistant';
   content: string;
@@ -667,7 +669,11 @@ export default function Home() {
                         : 'BMS AI'}
                     </div>
 
-                    <p>{message.content}</p>
+                    {message.role === 'user' ? (
+                      <p>{message.content}</p>
+                    ) : (
+                      <Markdown text={message.content} />
+                    )}
                   </div>
 
                 </article>
