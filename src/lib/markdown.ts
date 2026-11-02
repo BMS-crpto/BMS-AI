@@ -194,3 +194,80 @@ export function parseMarkdown(text: string): Block[] {
   }
   return blocks;
 }
+
+/* ------------------------- Export helpers (Word, PDF, CSV) ------------------------- */
+
+export function inlineText(nodes: Inline[]): string {
+  return nodes
+    .map(n => {
+      switch (n.t) {
+        case 'text': return n.v;
+        case 'code': return n.v;
+        case 'br': return ' ';
+        case 'strong':
+        case 'em': return inlineText(n.c);
+        case 'link': return inlineText(n.c);
+      }
+    })
+    .join('');
+}
+
+const esc = (s: string) =>
+  s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+
+function inlineHtml(nodes: Inline[]): string {
+  return nodes
+    .map(n => {
+      switch (n.t) {
+        case 'text': return esc(n.v);
+        case 'br': return '<br>';
+        case 'code': return `<code>${esc(n.v)}</code>`;
+        case 'strong': return `<strong>${inlineHtml(n.c)}</strong>`;
+        case 'em': return `<em>${inlineHtml(n.c)}</em>`;
+        case 'link': return `<a href="${esc(n.href)}">${inlineHtml(n.c)}</a>`;
+      }
+    })
+    .join('');
+}
+
+function blocksHtml(blocks: Block[]): string {
+  return blocks
+    .map(b => {
+      switch (b.t) {
+        case 'p': return `<p>${inlineHtml(b.c)}</p>`;
+        case 'h': return `<h${b.level}>${inlineHtml(b.c)}</h${b.level}>`;
+        case 'hr': return '<hr>';
+        case 'code': return `<pre><code>${esc(b.v)}</code></pre>`;
+        case 'quote': return `<blockquote>${blocksHtml(b.c)}</blockquote>`;
+        case 'list': {
+          const tag = b.ordered ? 'ol' : 'ul';
+          return `<${tag}>${b.items.map(i => `<li>${inlineHtml(i.c)}${blocksHtml(i.children)}</li>`).join('')}</${tag}>`;
+        }
+        case 'table':
+          return (
+            '<table border="1" cellspacing="0" cellpadding="6"><thead><tr>' +
+            b.head.map(c => `<th>${inlineHtml(c)}</th>`).join('') +
+            '</tr></thead><tbody>' +
+            b.rows.map(r => `<tr>${r.map(c => `<td>${inlineHtml(c)}</td>`).join('')}</tr>`).join('') +
+            '</tbody></table>'
+          );
+      }
+    })
+    .join('\n');
+}
+
+/** Safe HTML (everything escaped) used for the Word and PDF exports. */
+export function toHtml(text: string): string {
+  return blocksHtml(parseMarkdown(text));
+}
+
+/** First table in the answer as CSV text, or null when there is none. */
+export function firstTableCsv(text: string): string | null {
+  const table = parseMarkdown(text).find(b => b.t === 'table');
+  if (!table || table.t !== 'table') return null;
+  const cell = (c: Inline[]) => {
+    const v = inlineText(c).trim();
+    return /[",\n]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v;
+  };
+  return [table.head, ...table.rows].map(r => r.map(cell).join(',')).join('\r\n');
+}
