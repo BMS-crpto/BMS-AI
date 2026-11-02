@@ -3,10 +3,13 @@
 import {
   FormEvent,
   useEffect,
+  useRef,
   useState,
 } from 'react';
 
 import Markdown from './Markdown';
+import { AttachmentChips, MessageActions, TemplateChips } from './ChatExtras';
+import { ClientAttachment, fileToAttachment, useSpeech } from './chatTools';
 
 type Message = {
   role: 'user' | 'assistant';
@@ -92,6 +95,26 @@ export default function Home() {
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
   const [sidebarOpen, setSidebarOpen] = useState(false);
+
+  const [attachments, setAttachments] = useState<ClientAttachment[]>([]);
+  const [attachError, setAttachError] = useState('');
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const cameraInputRef = useRef<HTMLInputElement>(null);
+  const speech = useSpeech(text =>
+    setInput(current => (current ? `${current} ` : '') + text)
+  );
+
+  // "Share to BMS AI" from other apps arrives as ?title=&text=&url= in the address.
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const shared = [params.get('title'), params.get('text'), params.get('url')]
+      .filter(Boolean)
+      .join('\n');
+    if (shared) {
+      setInput(current => current || shared);
+      window.history.replaceState(null, '', window.location.pathname);
+    }
+  }, []);
 
   async function loadConversations() {
     const response = await fetch('/api/conversations');
@@ -239,25 +262,56 @@ export default function Home() {
     }
   }
 
+  async function addFiles(list: FileList | null) {
+    if (!list || !list.length) return;
+    setAttachError('');
+    const room = 4 - attachments.length;
+    if (room <= 0) {
+      setAttachError('You can attach up to 4 files per message.');
+      return;
+    }
+    if (list.length > room) setAttachError('You can attach up to 4 files per message.');
+    const added: ClientAttachment[] = [];
+    let size = attachments.reduce((sum, a) => sum + (a.data?.length || 0), 0);
+    for (const file of Array.from(list).slice(0, room)) {
+      try {
+        const item = await fileToAttachment(file);
+        size += item.data?.length || 0;
+        if (size > 8_500_000) {
+          setAttachError('Attachments are too large in total (about 6 MB limit).');
+          break;
+        }
+        added.push(item);
+      } catch (err) {
+        setAttachError(err instanceof Error ? err.message : 'Could not read that file.');
+      }
+    }
+    if (added.length) setAttachments(current => [...current, ...added]);
+  }
+
   async function sendMessage(
     event: FormEvent<HTMLFormElement>
   ) {
     event.preventDefault();
 
-    const text = input.trim();
+    const typed = input.trim();
 
-    if (!text || busy) return;
+    if ((!typed && attachments.length === 0) || busy) return;
 
-    const next: Message[] = [
-      ...messages,
-      {
-        role: 'user',
-        content: text,
-      },
-    ];
+    const text =
+      typed || 'Please look at the attached file(s) and tell me what is in them.';
+    const sent = attachments;
+    const shownText = sent.length
+      ? `${text}\n\n📎 ${sent.map(a => a.name).join(', ')}`
+      : text;
 
-    setMessages(next);
+    const previous = messages;
+    const userMessage: Message = { role: 'user', content: shownText };
+
+    setMessages([...messages, userMessage]);
     setInput('');
+    setAttachments([]);
+    setAttachError('');
     setError('');
     setNotice('');
     setBusy(true);
@@ -269,18 +323,22 @@ export default function Home() {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          messages: next,
+          messages: [...messages, { role: 'user', content: text }],
           provider,
           conversationId,
           thinkingMode,
+          attachments: sent,
         }),
       });
 
-      const data = await response.json();
+      const data = await response.json().catch(() => ({}));
 
       if (!response.ok) {
         throw new Error(
-          data.error || 'The request failed.'
+          data.error ||
+            (response.status === 413
+              ? 'The attached files are too large.'
+              : 'The request failed.')
         );
       }
 
@@ -288,16 +346,25 @@ export default function Home() {
       setNotice(data.notice || '');
 
       setMessages([
-        ...next,
+        ...messages,
+        userMessage,
         {
           role: 'assistant',
           content: data.reply,
         },
       ]);
 
-      await loadConversations();
+      try {
+        await loadConversations();
+      } catch {
+        /* the chat itself worked; the sidebar can refresh later */
+      }
 
     } catch (err) {
+      // Put everything back so nothing the user typed or attached is lost.
+      setMessages(previous);
+      setInput(typed);
+      setAttachments(sent);
       setError(
         err instanceof Error
           ? err.message
@@ -672,7 +739,10 @@ export default function Home() {
                     {message.role === 'user' ? (
                       <p>{message.content}</p>
                     ) : (
-                      <Markdown text={message.content} />
+                      <>
+                        <Markdown text={message.content} />
+                        <MessageActions text={message.content} />
+                      </>
                     )}
                   </div>
 
@@ -749,6 +819,29 @@ export default function Home() {
 
           </div>
 
+          <AttachmentChips
+            items={attachments}
+            onRemove={index =>
+              setAttachments(current => current.filter((_, i) => i !== index))
+            }
+          />
+
+          {attachError && (
+            <div className="error" role="alert">
+              {attachError}
+            </div>
+          )}
+
+          {speech.speechError && (
+            <div className="error" role="alert">
+              {speech.speechError}
+            </div>
+          )}
+
+          {!input && !busy && (
+            <TemplateChips onPick={prompt => setInput(prompt)} />
+          )}
+
           <form
             className="composer"
             onSubmit={sendMessage}
@@ -774,6 +867,58 @@ export default function Home() {
               }}
             />
 
+            <div className="composer-tools">
+              <input
+                ref={fileInputRef}
+                type="file"
+                multiple
+                hidden
+                accept="image/*,.pdf,.csv,.tsv,.xlsx,.txt,.md,.json,.log"
+                onChange={event => {
+                  addFiles(event.target.files);
+                  event.target.value = '';
+                }}
+              />
+              <input
+                ref={cameraInputRef}
+                type="file"
+                hidden
+                accept="image/*"
+                capture="environment"
+                onChange={event => {
+                  addFiles(event.target.files);
+                  event.target.value = '';
+                }}
+              />
+              <button
+                type="button"
+                onClick={() => fileInputRef.current?.click()}
+                disabled={busy}
+                aria-label="Attach files"
+              >
+                📎 Attach
+              </button>
+              <button
+                type="button"
+                onClick={() => cameraInputRef.current?.click()}
+                disabled={busy}
+                aria-label="Take a photo"
+              >
+                📷 Photo
+              </button>
+              {speech.supported && (
+                <button
+                  type="button"
+                  className={speech.listening ? 'tool-active' : ''}
+                  onClick={speech.toggle}
+                  disabled={busy}
+                  aria-label="Voice input"
+                >
+                  {speech.listening ? '⏺ Listening…' : '🎤 Speak'}
+                </button>
+              )}
+            </div>
+
             <div className="composer-footer">
 
               <span>
@@ -783,7 +928,7 @@ export default function Home() {
 
               <button
                 type="submit"
-                disabled={busy || !input.trim()}
+                disabled={busy || (!input.trim() && attachments.length === 0)}
                 aria-label="Send message"
               >
                 {busy ? '…' : '↑'}

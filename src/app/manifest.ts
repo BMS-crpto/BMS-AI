@@ -1,7 +1,7 @@
 import type { MetadataRoute } from 'next';
 
 export default function manifest(): MetadataRoute.Manifest {
-  return {
+  const manifest = {
     name: 'BMS AI',
     short_name: 'BMS AI',
     description: 'One intelligence. Unlimited possibilities.',
@@ -16,5 +16,12 @@ export default function manifest(): MetadataRoute.Manifest {
       { src: '/icon-512.png', sizes: '512x512', type: 'image/png' },
       { src: '/icon-maskable-512.png', sizes: '512x512', type: 'image/png', purpose: 'maskable' },
     ],
+    // Lets other apps (WhatsApp, Chrome, Gallery...) "Share" text and links to BMS AI.
+    share_target: {
+      action: '/',
+      method: 'GET',
+      params: { title: 'title', text: 'text', url: 'url' },
+    },
   };
+  return manifest as MetadataRoute.Manifest;
 }

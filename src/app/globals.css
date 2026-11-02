@@ -734,3 +734,19 @@ html, body {
 .message .md th, .message .md td { padding: 8px 10px; border-bottom: 1px solid var(--line); vertical-align: top; text-align: left; overflow-wrap: normal; min-width: 90px; }
 .message .md th { background: #111b2d; color: #fff; font-weight: 650; }
 .message .md tr:last-child td { border-bottom: 0; }
+
+/* ---- Attachments, voice, quick prompts, answer actions ---- */
+.chip-row { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 8px; }
+.chip-scroll { flex-wrap: nowrap; overflow-x: auto; padding-bottom: 4px; -webkit-overflow-scrolling: touch; }
+.chip, .composer-tools button, .msg-actions button {
+  font: inherit; font-size: 12px; color: #b7c8e2; background: #111b2d;
+  border: 1px solid #22314d; border-radius: 999px; padding: 6px 12px; cursor: pointer; white-space: nowrap;
+}
+.chip:hover, .composer-tools button:hover, .msg-actions button:hover { border-color: var(--blue); color: #fff; }
+.chip-file { display: inline-flex; align-items: center; gap: 6px; max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
+.chip-file button { background: transparent; border: 0; color: #8da0ba; font-size: 16px; line-height: 1; padding: 0 2px; cursor: pointer; }
+.composer-tools { display: flex; flex-wrap: wrap; gap: 6px; padding: 0 2px 8px; }
+.composer-tools button:disabled { opacity: .45; cursor: not-allowed; }
+.composer-tools .tool-active { border-color: #ff6b6b; color: #ff9a9a; }
+.msg-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+.msg-actions button { padding: 4px 10px; font-size: 11px; color: #8da0ba; background: transparent; }
