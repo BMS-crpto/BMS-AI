@@ -1,9 +1,11 @@
 import { classifyFetchFailure, classifyHttpError, ProviderError } from './errors';
 import { MAX_OUTPUT_TOKENS, modelFor, systemPrompt } from './modes';
-import type { ChatMessage, ProviderId, ProviderResult, SearchSource, ThinkingMode } from './types';
+import type { ChatMessage, Media, ProviderId, ProviderResult, SearchSource, ThinkingMode } from './types';
 
 export type CallOptions = {
   messages: ChatMessage[];
+  /** Images and PDFs attached to the last user message. */
+  media?: Media[];
   mode: ThinkingMode;
   timeoutMs: number;
   /** Search results to ground the answer (Research mode). */
@@ -51,9 +53,14 @@ async function callGemini(o: CallOptions): Promise<ProviderResult> {
 
   const body: Record<string, unknown> = {
     systemInstruction: { parts: [{ text: systemPrompt(o.mode, o.searchContext) }] },
-    contents: o.messages.map(m => ({
+    contents: o.messages.map((m, idx) => ({
       role: m.role === 'user' ? 'user' : 'model',
-      parts: [{ text: m.content }],
+      parts: [
+        { text: m.content },
+        ...(idx === o.messages.length - 1 && m.role === 'user'
+          ? (o.media || []).map(x => ({ inlineData: { mimeType: x.mime, data: x.data } }))
+          : []),
+      ],
     })),
     generationConfig,
   };
@@ -99,7 +106,24 @@ async function callOpenAICompatible(provider: 'openai' | 'groq' | 'openrouter', 
     { Authorization: `Bearer ${cfg.key()}`, ...cfg.extra },
     {
       model,
-      messages: [{ role: 'system', content: systemPrompt(o.mode, o.searchContext) }, ...o.messages],
+      messages: [
+        { role: 'system', content: systemPrompt(o.mode, o.searchContext) },
+        ...o.messages.map((m, idx) =>
+          idx === o.messages.length - 1 && m.role === 'user' && o.media?.length
+            ? {
+                role: 'user',
+                content: [
+                  { type: 'text', text: m.content },
+                  ...o.media.map(x =>
+                    x.kind === 'image'
+                      ? { type: 'image_url', image_url: { url: `data:${x.mime};base64,${x.data}` } }
+                      : { type: 'file', file: { filename: x.name, file_data: `data:application/pdf;base64,${x.data}` } }
+                  ),
+                ],
+              }
+            : m
+        ),
+      ],
       max_tokens: MAX_OUTPUT_TOKENS[o.mode],
     },
     o.timeoutMs
@@ -123,7 +147,21 @@ async function callAnthropic(o: CallOptions): Promise<ProviderResult> {
       model,
       max_tokens: MAX_OUTPUT_TOKENS[o.mode],
       system: systemPrompt(o.mode, o.searchContext),
-      messages: o.messages,
+      messages: o.messages.map((m, idx) =>
+        idx === o.messages.length - 1 && m.role === 'user' && o.media?.length
+          ? {
+              role: 'user',
+              content: [
+                ...o.media.map(x =>
+                  x.kind === 'image'
+                    ? { type: 'image', source: { type: 'base64', media_type: x.mime, data: x.data } }
+                    : { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: x.data } }
+                ),
+                { type: 'text', text: m.content },
+              ],
+            }
+          : m
+      ),
     },
     o.timeoutMs
   );
@@ -136,3 +174,6 @@ export function callProvider(provider: ProviderId, o: CallOptions): Promise<Prov
   if (provider === 'openai' || provider === 'groq' || provider === 'openrouter') return callOpenAICompatible(provider, o);
   return callAnthropic(o);
 }
+
+/** Only these providers can read images and PDFs (the free Groq and OpenRouter defaults cannot). */
+export const MEDIA_CAPABLE: ProviderId[] = ['gemini', 'openai', 'anthropic'];

@@ -1,8 +1,8 @@
 import { cooldownInfo, markAuthFailure, markQuota } from './cooldown';
 import { PROVIDER_LABEL, ProviderError } from './errors';
-import { callProvider, isConfigured } from './providers';
+import { callProvider, isConfigured, MEDIA_CAPABLE } from './providers';
 import { formatSources, searchConfigured, webSearch } from './search';
-import type { ChatMessage, ProviderAttempt, ProviderId, ProviderResult, SearchSource, ThinkingMode } from './types';
+import type { ChatMessage, Media, ProviderAttempt, ProviderId, ProviderResult, SearchSource, ThinkingMode } from './types';
 
 const ALL: ProviderId[] = ['gemini', 'groq', 'openrouter', 'anthropic', 'openai'];
 
@@ -69,7 +69,7 @@ function describe(a: ProviderAttempt): string {
   }
 }
 
-function buildFailure(attempts: ProviderAttempt[]): AllProvidersFailed {
+function buildFailure(attempts: ProviderAttempt[], mediaPresent = false): AllProvidersFailed {
   const configured = attempts.filter(a => a.status !== 'skipped_unconfigured');
   if (configured.length === 0) {
     return new AllProvidersFailed(
@@ -86,8 +86,9 @@ function buildFailure(attempts: ProviderAttempt[]): AllProvidersFailed {
       : ' Usage limits are exhausted. Try again later, or add billing or another provider key.'
     : ' Please try again in a moment.';
   const lines = configured.map(describe).join('; ');
+  const mediaNote = mediaPresent ? ' Images and PDFs can only be read by Gemini, OpenAI or Claude (Groq and OpenRouter cannot).' : '';
   return new AllProvidersFailed(
-    `BMS AI could not get an answer from any AI provider. ${lines}.${hint}`,
+    `BMS AI could not get an answer from any AI provider. ${lines}.${hint}${mediaNote}`,
     attempts,
     allQuota ? 429 : 503,
     allQuota ? 'quota' : 'unavailable'
@@ -99,6 +100,7 @@ export async function routeChat(input: {
   mode: ThinkingMode;
   requested: string;
   extraContext?: string;
+  media?: Media[];
 }): Promise<RouteSuccess> {
   const { messages, mode, requested } = input;
   const startedAt = Date.now();
@@ -120,7 +122,19 @@ export async function routeChat(input: {
   if (input.extraContext) searchContext = [input.extraContext, searchContext].filter(Boolean).join('\n\n');
 
   // ---- Provider loop
-  for (const provider of providerOrder(requested)) {
+  const media = input.media && input.media.length ? input.media : undefined;
+  let order = providerOrder(requested);
+  if (media) {
+    order = order.filter(p => MEDIA_CAPABLE.includes(p));
+    if (!order.some(isConfigured)) {
+      throw new AllProvidersFailed(
+        'Reading images and PDFs needs a Gemini, OpenAI or Claude API key on the server. Groq and OpenRouter cannot read them. Add one of those keys, or paste the text instead.',
+        [], 503, 'no_provider'
+      );
+    }
+  }
+
+  for (const provider of order) {
     if (!isConfigured(provider)) {
       attempts.push({ provider, status: 'skipped_unconfigured' });
       continue;
@@ -142,7 +156,7 @@ export async function routeChat(input: {
       tries++;
       try {
         const result = await callProvider(provider, {
-          messages, mode,
+          messages, mode, media,
           timeoutMs: Math.min(PER_CALL_TIMEOUT_MS, remaining),
           searchContext, sources, geminiNativeSearch,
         });
@@ -179,5 +193,5 @@ export async function routeChat(input: {
     });
   }
 
-  throw buildFailure(attempts);
+  throw buildFailure(attempts, Boolean(media));
 }

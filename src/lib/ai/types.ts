@@ -1,6 +1,13 @@
 export type ProviderId = 'gemini' | 'openai' | 'anthropic' | 'groq' | 'openrouter';
 export type ThinkingMode = 'fast' | 'thinking' | 'coding' | 'research';
 
+export type Media = {
+  kind: 'image' | 'pdf';
+  name: string;
+  mime: string;
+  data: string; // base64
+};
+
 export type ChatMessage = {
   role: 'user' | 'assistant';
   content: string;
