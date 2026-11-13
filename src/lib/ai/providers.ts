@@ -4,6 +4,8 @@ import type { ChatMessage, Media, ProviderId, ProviderResult, SearchSource, Thin
 
 export type CallOptions = {
   messages: ChatMessage[];
+  /** Use this model instead of the configured default (used for model fallback). */
+  model?: string;
   /** Images and PDFs attached to the last user message. */
   media?: Media[];
   mode: ThinkingMode;
@@ -46,7 +48,7 @@ function nonEmpty(provider: ProviderId, text: string): string {
 }
 
 async function callGemini(o: CallOptions): Promise<ProviderResult> {
-  const model = modelFor('gemini', o.mode);
+  const model = o.model || modelFor('gemini', o.mode);
   const generationConfig: Record<string, unknown> = { maxOutputTokens: MAX_OUTPUT_TOKENS[o.mode] };
   // Thinking budget is only valid for 2.5-series models.
   if (/2\.5/.test(model) && o.mode === 'fast') generationConfig.thinkingConfig = { thinkingBudget: 0 };
@@ -99,7 +101,7 @@ const COMPAT: Record<'openai' | 'groq' | 'openrouter', { url: string; key: () =>
 /** OpenAI, Groq and OpenRouter all speak the OpenAI chat-completions format. */
 async function callOpenAICompatible(provider: 'openai' | 'groq' | 'openrouter', o: CallOptions): Promise<ProviderResult> {
   const cfg = COMPAT[provider];
-  const model = modelFor(provider, o.mode);
+  const model = o.model || modelFor(provider, o.mode);
   const data = await post(
     provider,
     cfg.url,
@@ -138,7 +140,7 @@ async function callOpenAICompatible(provider: 'openai' | 'groq' | 'openrouter', 
 }
 
 async function callAnthropic(o: CallOptions): Promise<ProviderResult> {
-  const model = modelFor('anthropic', o.mode);
+  const model = o.model || modelFor('anthropic', o.mode);
   const data = await post(
     'anthropic',
     'https://api.anthropic.com/v1/messages',

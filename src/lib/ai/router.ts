@@ -1,5 +1,6 @@
-import { cooldownInfo, markAuthFailure, markQuota } from './cooldown';
+import { cooldownInfo, markAuthFailure, markMissing, markQuota } from './cooldown';
 import { PROVIDER_LABEL, ProviderError } from './errors';
+import { modelsFor } from './modes';
 import { callProvider, isConfigured, MEDIA_CAPABLE } from './providers';
 import { formatSources, searchConfigured, webSearch } from './search';
 import type { ChatMessage, Media, ProviderAttempt, ProviderId, ProviderResult, SearchSource, ThinkingMode } from './types';
@@ -148,49 +149,81 @@ export async function routeChat(input: {
     const geminiNativeSearch = provider === 'gemini' && searchUnavailable;
     const usedNoSearch = searchUnavailable && !geminiNativeSearch;
 
-    let tries = 0;
+    const models = modelsFor(provider, mode);
+    const keyOf = (m: string) => `${provider}:${m}`;
     let lastError: ProviderError | null = null;
-    while (true) {
-      const remaining = deadline - Date.now();
-      if (remaining < 4000) break;
-      tries++;
-      try {
-        const result = await callProvider(provider, {
-          messages, mode, media,
-          timeoutMs: Math.min(PER_CALL_TIMEOUT_MS, remaining),
-          searchContext, sources, geminiNativeSearch,
-        });
-        attempts.push({ provider, status: 'ok' });
-        const notices: string[] = [];
-        const first = attempts.find(a => a.status !== 'skipped_unconfigured');
-        if (first && first.provider !== provider) {
-          const why = first.status === 'skipped_cooldown' || first.kind === 'quota' ? 'usage limit reached' : first.kind === 'auth' ? 'API key problem' : 'temporarily unavailable';
-          notices.push(`${PROVIDER_LABEL[first.provider]} ${why}, so ${PROVIDER_LABEL[provider]} answered instead.`);
-        }
-        if (usedNoSearch) notices.push('Live web search was unavailable, so this answer is not based on current web sources.');
-        return { result, attempts, notice: notices.join(' ') || undefined };
-      } catch (e) {
-        const err = e instanceof ProviderError ? e : new ProviderError(provider, 'unknown', String(e));
-        lastError = err;
-        console.error(`BMS AI ${provider} error [${err.kind}${err.status ? ' ' + err.status : ''}]: ${err.message}`);
+    let stopProvider = false;
 
-        if (err.kind === 'quota') { markQuota(provider, err.retryAfterSeconds); break; }   // never retry quota
-        if (err.kind === 'auth') { markAuthFailure(provider); break; }
-        const canRetry =
-          (err.kind === 'transient' && tries < MAX_TRANSIENT_TRIES) ||
-          (err.kind === 'timeout' && tries < MAX_TIMEOUT_TRIES);
-        if (!canRetry) break;
-        await sleep(backoff(tries - 1, err.retryAfterSeconds));
+    for (let mi = 0; mi < models.length && !stopProvider; mi++) {
+      const model = models[mi];
+      if (cooldownInfo(keyOf(model))) continue; // this model is paused (quota) or missing
+
+      // With backup models left, give up on a busy model sooner.
+      const moreModels = models.slice(mi + 1).some(m => !cooldownInfo(keyOf(m)));
+      const maxTransient = moreModels ? 2 : MAX_TRANSIENT_TRIES;
+
+      let tries = 0;
+      while (true) {
+        const remaining = deadline - Date.now();
+        if (remaining < 4000) { stopProvider = true; break; }
+        tries++;
+        try {
+          const result = await callProvider(provider, {
+            messages, mode, media, model,
+            timeoutMs: Math.min(PER_CALL_TIMEOUT_MS, remaining),
+            searchContext, sources, geminiNativeSearch,
+          });
+          attempts.push({ provider, status: 'ok' });
+          const notices: string[] = [];
+          const first = attempts.find(a => a.status !== 'skipped_unconfigured');
+          if (first && first.provider !== provider) {
+            const why = first.status === 'skipped_cooldown' || first.kind === 'quota' ? 'usage limit reached' : first.kind === 'auth' ? 'API key problem' : 'temporarily unavailable';
+            notices.push(`${PROVIDER_LABEL[first.provider]} ${why}, so ${PROVIDER_LABEL[provider]} answered instead.`);
+          }
+          if (usedNoSearch) notices.push('Live web search was unavailable, so this answer is not based on current web sources.');
+          return { result, attempts, notice: notices.join(' ') || undefined };
+        } catch (e) {
+          const err = e instanceof ProviderError ? e : new ProviderError(provider, 'unknown', String(e));
+          lastError = err;
+          console.error(`BMS AI ${provider}/${model} error [${err.kind}${err.status ? ' ' + err.status : ''}]: ${err.message}`);
+
+          if (err.kind === 'quota') { markQuota(keyOf(model), err.retryAfterSeconds); break; }   // never retry quota; try the next model
+          if (err.kind === 'not_found') { markMissing(keyOf(model)); break; }                      // wrong model name: skip it for hours
+          if (err.kind === 'auth') { markAuthFailure(provider); stopProvider = true; break; }       // bad key: skip the provider
+          const canRetry =
+            (err.kind === 'transient' && tries < maxTransient) ||
+            (err.kind === 'timeout' && tries < MAX_TIMEOUT_TRIES);
+          if (canRetry) { await sleep(backoff(tries - 1, err.retryAfterSeconds)); continue; }
+          // Out of retries on a busy model: the next model may be fine. Other errors end this provider.
+          if (err.kind === 'transient' || err.kind === 'timeout' || err.kind === 'empty') break;
+          stopProvider = true;
+          break;
+        }
       }
     }
 
-    const cdAfter = cooldownInfo(provider);
-    attempts.push({
-      provider, status: 'failed',
-      kind: lastError?.kind ?? 'timeout',
-      detail: lastError?.message,
-      retryAfterSeconds: cdAfter?.remainingSeconds,
-    });
+    // Summarise this provider for the final message.
+    const waits = models
+      .map(m => cooldownInfo(keyOf(m)))
+      .filter((c): c is NonNullable<typeof c> => Boolean(c) && c!.reason === 'quota')
+      .map(c => c.remainingSeconds);
+    const authCd = cooldownInfo(provider);
+    if (lastError === null) {
+      // Every model was already paused; nothing was called.
+      attempts.push({
+        provider,
+        status: waits.length ? 'skipped_cooldown' : 'failed',
+        kind: waits.length ? 'quota' : 'not_found',
+        retryAfterSeconds: waits.length ? Math.min(...waits) : undefined,
+      });
+    } else {
+      attempts.push({
+        provider, status: 'failed',
+        kind: authCd ? 'auth' : lastError.kind,
+        detail: lastError.message,
+        retryAfterSeconds: waits.length ? Math.min(...waits) : undefined,
+      });
+    }
   }
 
   throw buildFailure(attempts, Boolean(media));

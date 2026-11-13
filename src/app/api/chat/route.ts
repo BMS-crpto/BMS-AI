@@ -6,6 +6,8 @@ import { buildLinkContext } from '@/lib/ai/fetchUrl';
 import { processAttachments } from '@/lib/ai/attachments';
 import { isAdminEmail, parseCommand, runCommand } from '@/lib/connectors';
 import { handleMemoryCommand, listMemories, MEMORY_TITLE, memoryContext } from '@/lib/memory';
+import { clientIp, rateLimit, waitText } from '@/lib/security';
+import { dailyLimit, handleUsageCommand, limitReachedText, usageToday } from '@/lib/limits';
 import type { ChatMessage, ThinkingMode } from '@/lib/ai/types';
 
 export const runtime = 'nodejs';
@@ -19,6 +21,15 @@ export async function POST(request: NextRequest) {
     const userId = await getSessionUserId();
     if (!userId) {
       return NextResponse.json({ error: 'Sign in to use BMS AI.' }, { status: 401 });
+    }
+
+    // Burst protection: stops loops and abuse from burning provider quota.
+    const burst = rateLimit(`chat:${userId}`, 12, 60_000);
+    if (!burst.ok) {
+      return NextResponse.json(
+        { error: `You are sending messages very fast. Please wait ${waitText(burst.retryAfterSeconds)}.`, code: 'rate_limited' },
+        { status: 429 }
+      );
     }
 
     const body = await request.json().catch(() => null);
@@ -66,15 +77,20 @@ export async function POST(request: NextRequest) {
     let direct: { text: string; label: string } | undefined;
     let connectorContext: string | undefined;
 
-    const memoryResult = await handleMemoryCommand(prisma, userId, lastUser.content);
+    const me = await prisma.user.findUnique({ where: { id: userId }, select: { email: true } });
+    const isAdmin = isAdminEmail(me?.email);
+
+    const usageResult = await handleUsageCommand(prisma, userId, lastUser.content, isAdmin);
+    if (usageResult) direct = { text: usageResult.text, label: 'memory' };
+
+    const memoryResult = direct ? null : await handleMemoryCommand(prisma, userId, lastUser.content);
     if (memoryResult) direct = { text: memoryResult.text, label: 'memory' };
 
     if (!direct) {
       // Connector commands (/github, /render): owner only, read only.
       const command = parseCommand(lastUser.content);
       if (command) {
-        const me = await prisma.user.findUnique({ where: { id: userId }, select: { email: true } });
-        if (!isAdminEmail(me?.email)) {
+        if (!isAdmin) {
           return NextResponse.json({ error: 'Connector commands are limited to the site owner. Add your email to ADMIN_EMAILS to use them.' }, { status: 403 });
         }
         const out = await runCommand(command);
@@ -84,6 +100,7 @@ export async function POST(request: NextRequest) {
       }
     }
 
+    let remainingToday: number | undefined;
     let routed;
     if (direct) {
       routed = {
@@ -91,6 +108,16 @@ export async function POST(request: NextRequest) {
         notice: undefined as string | undefined,
       };
     } else {
+      // Daily limit per user (the owner is exempt). Checked before any provider quota is spent.
+      const limit = dailyLimit();
+      if (limit > 0 && !isAdmin) {
+        const used = await usageToday(prisma, userId);
+        if (used >= limit) {
+          return NextResponse.json({ error: limitReachedText(limit), code: 'daily_limit' }, { status: 429 });
+        }
+        remainingToday = limit - used - 1;
+      }
+
       // Saved memories, link contents and attached files become extra context for the AI.
       let memCtx: string | undefined;
       try { memCtx = memoryContext(await listMemories(prisma, userId)); } catch { memCtx = undefined; }
@@ -98,7 +125,12 @@ export async function POST(request: NextRequest) {
       const extraContext = [memCtx, connectorContext, attachments.context, linkContext].filter(Boolean).join('\n\n') || undefined;
       routed = await routeChat({ messages, mode, requested, extraContext, media: attachments.media });
     }
-    const { result, notice } = routed;
+    const { result } = routed;
+    let notice = routed.notice;
+    if (remainingToday !== undefined && remainingToday <= 5) {
+      const left = `You have ${remainingToday} AI message${remainingToday === 1 ? '' : 's'} left today.`;
+      notice = [notice, left].filter(Boolean).join(' ');
+    }
 
     // Only now touch the database, so a failed AI call leaves no empty chats behind.
     if (!conversationId) {

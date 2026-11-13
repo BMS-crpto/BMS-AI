@@ -78,6 +78,7 @@ export default function Home() {
 
   const [register, setRegister] = useState(false);
   const [email, setEmail] = useState('');
+  const [inviteCode, setInviteCode] = useState('');
   const [password, setPassword] = useState('');
   const [authError, setAuthError] = useState('');
   const [authBusy, setAuthBusy] = useState(false);
@@ -177,6 +178,7 @@ export default function Home() {
           body: JSON.stringify({
             email,
             password,
+            ...(register ? { inviteCode } : {}),
           }),
         }
       );
@@ -478,6 +480,22 @@ export default function Home() {
             <small className="auth-hint">
               Use at least 10 characters.
             </small>
+          )}
+
+          {register && (
+            <label>
+              Invite code (if you were given one)
+
+              <input
+                type="text"
+                autoComplete="off"
+                autoCapitalize="none"
+                value={inviteCode}
+                onChange={event =>
+                  setInviteCode(event.target.value)
+                }
+              />
+            </label>
           )}
 
           {authError && (

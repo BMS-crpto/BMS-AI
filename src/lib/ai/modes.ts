@@ -48,10 +48,10 @@ export function systemPrompt(mode: ThinkingMode, extra?: string): string {
  */
 const DEFAULTS: Record<ProviderId, Record<ThinkingMode, string>> = {
   gemini: {
-    fast: 'gemini-2.5-flash',
-    thinking: 'gemini-2.5-flash',
-    coding: 'gemini-2.5-flash',
-    research: 'gemini-2.5-flash',
+    fast: 'gemini-3.8-flash',
+    thinking: 'gemini-3.8-flash',
+    coding: 'gemini-3.8-flash',
+    research: 'gemini-3.8-flash',
   },
   openai: {
     fast: 'gpt-4o-mini',
@@ -88,6 +88,23 @@ export function modelFor(provider: ProviderId, mode: ThinkingMode): string {
     process.env[`${p}_MODEL`] ||
     DEFAULTS[provider][mode]
   );
+}
+
+/**
+ * Gemini free-tier limits are counted per model, so when one model is out of quota
+ * or busy the router tries the next one before leaving Gemini.
+ * Override with GEMINI_FALLBACK_MODELS (comma separated, empty value turns it off).
+ */
+const DEFAULT_GEMINI_FALLBACKS = 'gemini-3.7-flash,gemini-3.6-flash,gemini-3.5-flash,gemini-3.5-flash-lite';
+
+export function modelsFor(provider: ProviderId, mode: ThinkingMode): string[] {
+  const primary = modelFor(provider, mode);
+  if (provider !== 'gemini') return [primary];
+  const extra = (process.env.GEMINI_FALLBACK_MODELS ?? DEFAULT_GEMINI_FALLBACKS)
+    .split(',')
+    .map(s => s.trim())
+    .filter(Boolean);
+  return [...new Set([primary, ...extra])].slice(0, 5);
 }
 
 export const MAX_OUTPUT_TOKENS: Record<ThinkingMode, number> = {

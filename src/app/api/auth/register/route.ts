@@ -2,10 +2,26 @@ import { NextRequest, NextResponse } from 'next/server';
 import bcrypt from 'bcryptjs';
 import { prisma } from '@/lib/prisma';
 import { createSession } from '@/lib/auth';
+import { clientIp, inviteOk, inviteRequired, rateLimit, waitText } from '@/lib/security';
 
 export async function POST(request: NextRequest) {
   try {
-    const { email, password } = await request.json();
+    const limited = rateLimit(`register:${clientIp(request.headers)}`, 5, 3_600_000);
+    if (!limited.ok) {
+      return NextResponse.json(
+        { error: `Too many sign-up attempts. Try again in ${waitText(limited.retryAfterSeconds)}.` },
+        { status: 429 }
+      );
+    }
+
+    const { email, password, inviteCode } = await request.json();
+
+    if (!inviteOk(inviteCode)) {
+      return NextResponse.json(
+        { error: inviteRequired() ? 'A valid invite code is required to create an account.' : 'Could not create your account.' },
+        { status: 403 }
+      );
+    }
 
     if (
       typeof email !== 'string' ||
